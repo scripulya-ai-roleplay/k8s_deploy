@@ -1,0 +1,35 @@
+# Non-secret configuration shared by all scripulya workloads.
+# Both apps use pydantic-settings with extra="ignore", case_sensitive=False, so a
+# single ConfigMap is safe: each app reads only the keys it knows and ignores the rest.
+#
+# NOTE: hostnames use in-cluster Service DNS (<svc>.<ns>.svc.cluster.local).
+# The queue names and RABBIT_URL are a CONTRACT between the backend and the worker —
+# keep them in sync with docker-compose.yml.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: scripulya-config
+  namespace: scripulya
+  labels:
+    app.kubernetes.io/part-of: scripulya
+data:
+  # --- shared ---
+  RABBIT_URL: amqp://guest:guest@rabbitmq.scripulya.svc.cluster.local:5672/
+  DEBUG: "false"
+
+  # --- scripulya_ai (backend) ---
+  HOST: 0.0.0.0
+  PORT: "8000"
+  DATABASE_URL: postgresql+asyncpg://user:password@postgres.scripulya.svc.cluster.local:5432/dbname
+  JWT_ALGORITHM: HS256
+  LLM_AGENT_REQUEST_QUEUE: llm.agent.request
+  LLM_AGENT_RESULT_QUEUE: llm.agent.result
+  LLM_AGENT_TIMEOUT: "60"
+
+  # --- scripulya_agent (worker) ---
+  LLM_REQUEST_QUEUE: llm.agent.request
+  LLM_RESULT_QUEUE: llm.agent.result
+  ZAI_BASE_URL: https://api.z.ai/api/paas/v4
+  DEEPSEEK_BASE_URL: https://api.deepseek.com
+  LLM_TEMPERATURE: "0.7"
+  LLM_MAX_TOKENS: "4096"

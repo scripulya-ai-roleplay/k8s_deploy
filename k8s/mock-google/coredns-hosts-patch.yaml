@@ -1,0 +1,25 @@
+# OPTIONAL: make `generativelanguage.googleapis.com` resolve to the in-cluster
+# mock-google-api Service so the agent's Google/Gemini provider runs offline.
+#
+# Service names can't contain dots, so we override DNS at CoreDNS instead. Add a
+# `hosts` block to the cluster's CoreDNS Corefile:
+#
+#   kubectl -n kube-system get configmap coredns -o yaml > coredns.yaml
+#
+# Then insert this block BEFORE the `proxy . /etc/resolv.conf` (or `forward`) line
+# inside the `.:53` server block, using the mock Service's ClusterIP:
+#
+#   hosts {
+#       <MOCK_CLUSTER_IP> generativelanguage.googleapis.com
+#       fallthrough
+#   }
+#
+# Find the ClusterIP with:
+#   kubectl -n scripulya get svc mock-google-api -o jsonpath='{.spec.clusterIP}'
+#
+# Then apply the edited Corefile and restart CoreDNS:
+#   kubectl -n kube-system apply -f coredns.yaml
+#   kubectl -n kube-system rollout restart deployment/coredns
+#
+# This file is documentation only (no resources to apply); it is intentionally
+# not valid as `kubectl apply` input. See README §mock for the full flow.

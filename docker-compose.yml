@@ -1,0 +1,156 @@
+# =============================================================================
+# Unified local stack for scripulya_ai + scripulya_agent as ONE system.
+#
+# Services (default profile, `docker compose up`):
+#   postgres          PostgreSQL 15 — the backend's DB (seeded from init.sql)
+#   rabbitmq          shared broker between the backend and the LLM worker
+#   scripulya-ai      FastAPI HTTP backend (publishes LLMRequest, consumes LLMResult)
+#   scripulya-agent   FastStream worker (consumes LLMRequest, publishes LLMResult)
+#
+# Optional profile (`docker compose --profile mock-google up`):
+#   mock-google-api   offline mock of the Google AI endpoint (see README §mock)
+#
+# Build contexts point at the sibling repos: ../scripulya_ai and ../scripulya_agent.
+# Override with the APPS_DIR env var if this repo lives elsewhere, e.g.:
+#   APPS_DIR=/path/to/apps docker compose up
+# =============================================================================
+
+name: scripulya
+
+services:
+  # ---------------------------------------------------------------------------
+  # Backend: FastAPI HTTP server. Delegates LLM calls to the agent over RabbitMQ.
+  # ---------------------------------------------------------------------------
+  scripulya-ai:
+    build:
+      context: ${APPS_DIR:-..}/scripulya_ai
+      dockerfile: Dockerfile
+    image: scripulya-ai:dev
+    ports:
+      - "${AI_PORT:-8000}:8000"
+    environment:
+      DEBUG: ${DEBUG:-false}
+      HOST: 0.0.0.0
+      PORT: "8000"
+      DATABASE_URL: postgresql+asyncpg://user:password@postgres:5432/dbname
+      JWT_SECRET_KEY: ${JWT_SECRET_KEY:-dev-secret-change-me}
+      JWT_ALGORITHM: HS256
+      JWT_PUBLIC_KEY: ""
+      RABBIT_URL: amqp://guest:guest@rabbitmq:5672/
+      LLM_AGENT_REQUEST_QUEUE: llm.agent.request
+      LLM_AGENT_RESULT_QUEUE: llm.agent.result
+      LLM_AGENT_TIMEOUT: "60"
+    networks:
+      - scripulya-net
+    depends_on:
+      postgres:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    # The image's built-in HEALTHCHECK probes /health (added in scripulya_ai).
+    # Override only to give a more generous start_period for cold broker/DB connects.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # LLM worker: FastStream consumer. Consumes llm.agent.request, publishes
+  # llm.agent.result. Connects to the SAME broker as the backend.
+  # ---------------------------------------------------------------------------
+  scripulya-agent:
+    build:
+      context: ${APPS_DIR:-..}/scripulya_agent
+      dockerfile: Dockerfile
+    image: scripulya-agent:dev
+    environment:
+      DEBUG: ${DEBUG:-false}
+      RABBIT_URL: amqp://guest:guest@rabbitmq:5672/
+      LLM_REQUEST_QUEUE: llm.agent.request
+      LLM_RESULT_QUEUE: llm.agent.result
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ZAI_API_KEY: ${ZAI_API_KEY:-}
+      ZAI_BASE_URL: ${ZAI_BASE_URL:-https://api.z.ai/api/paas/v4}
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_BASE_URL: ${DEEPSEEK_BASE_URL:-https://api.deepseek.com}
+      LLM_TEMPERATURE: ${LLM_TEMPERATURE:-0.7}
+      LLM_MAX_TOKENS: ${LLM_MAX_TOKENS:-4096}
+    networks:
+      - scripulya-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ---------------------------------------------------------------------------
+  # PostgreSQL 15. Schema + test data come from the backend's init.sql, mounted
+  # into docker-entrypoint-initdb.d (runs ONLY on first init of postgres_data).
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:15
+    environment:
+      POSTGRES_DB: dbname
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    # Host port intentionally NOT published by default to avoid clashes with other
+    # local Postgres instances. The backend reaches it over the internal network as
+    # postgres:5432. To browse it from the host, add:  ports: ["5432:5432"]
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ${APPS_DIR:-..}/scripulya_ai/scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    networks:
+      - scripulya-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d dbname"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # ---------------------------------------------------------------------------
+  # RabbitMQ broker + management UI. Shared by the backend and the worker.
+  # AMQP 5672 is kept internal-only (not published) to avoid host clashes;
+  # the management UI is published for convenience. Defaults to host port 15673
+  # to avoid colliding with a host-installed RabbitMQ (which already owns 15672).
+  # ---------------------------------------------------------------------------
+  rabbitmq:
+    image: rabbitmq:3-management
+    ports:
+      - "${RABBIT_MGMT_PORT:-15673}:15672"   # management UI (guest/guest)
+    networks:
+      - scripulya-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
+  # OPTIONAL (profile: mock-google). Offline mock of the Google AI endpoint.
+  # Only useful to run the agent's Google/Gemini provider without network egress.
+  # The backend itself never calls this host, so it is OFF by default.
+  # ---------------------------------------------------------------------------
+  mock-google-api:
+    profiles: ["mock-google"]
+    build:
+      context: ${APPS_DIR:-..}/scripulya_ai
+      dockerfile: google_api_mock/Dockerfile
+    image: scripulya-mock-google-api:dev
+    networks:
+      scripulya-net:
+        aliases:
+          - generativelanguage.googleapis.com
+
+networks:
+  scripulya-net:
+    driver: bridge
+
+volumes:
+  postgres_data:

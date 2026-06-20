@@ -1,0 +1,59 @@
+# OPTIONAL: offline mock of the Google AI endpoint.
+#
+# The backend (scripulya_ai) NEVER calls this host — it is only relevant if you want
+# to exercise the agent's Google/Gemini provider without real network egress. The
+# agent resolves `generativelanguage.googleapis.com` directly; to point it at this
+# mock in-cluster you need a CoreDNS hosts override (see coredns-hosts-patch.yaml),
+# because Service names cannot contain dots.
+#
+# Enable:   kubectl apply -f k8s/mock-google/
+# (Not applied by `make apply`.)
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mock-google-api
+  namespace: scripulya
+  labels:
+    app.kubernetes.io/name: mock-google-api
+    app.kubernetes.io/part-of: scripulya
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mock-google-api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mock-google-api
+        app.kubernetes.io/part-of: scripulya
+    spec:
+      containers:
+        - name: mock-google-api
+          image: scripulya-mock-google-api:dev
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 80
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: mock-google-api
+  namespace: scripulya
+  labels:
+    app.kubernetes.io/name: mock-google-api
+    app.kubernetes.io/part-of: scripulya
+spec:
+  selector:
+    app.kubernetes.io/name: mock-google-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80

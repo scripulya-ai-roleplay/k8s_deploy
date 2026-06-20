@@ -1,0 +1,32 @@
+# OPTIONAL Ingress for scripulya_ai. Applies cleanly without an ingress controller
+# (it just won't get an address until one exists), but only routes traffic once a
+# controller is installed.
+#
+# kind:   install ingress-nginx (class "nginx")  -> https://kind.sigs.k8s.io/docs/user/ingress/
+# k3d:    Traefik is bundled (class "traefik")   -> change ingressClassName below
+#
+# Use:
+#   kubectl apply -f k8s/30-ingress.yaml
+# Then add `scripulya.local` -> kind node IP to /etc/hosts (see README).
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: scripulya-ai
+  namespace: scripulya
+  labels:
+    app.kubernetes.io/name: scripulya-ai
+    app.kubernetes.io/part-of: scripulya
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: scripulya.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: scripulya-ai
+                port:
+                  number: 8000

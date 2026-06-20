@@ -1,0 +1,99 @@
+# RabbitMQ — the shared broker between the backend and the LLM worker.
+#
+# `rabbitmq.conf` disables the default guest loopback restriction so the
+# guest:guest credentials (used by both apps) work from OTHER pods (the
+# management-API health probe + the apps' AMQP connections). Harmless if guest
+# loopback is not actually restricted in your image.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: rabbitmq-config
+  namespace: scripulya
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    app.kubernetes.io/part-of: scripulya
+data:
+  rabbitmq.conf: |
+    # Allow the default `guest` user to connect from other pods (non-loopback).
+    loopback_users.guest = false
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: rabbitmq
+  namespace: scripulya
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    app.kubernetes.io/part-of: scripulya
+spec:
+  selector:
+    app.kubernetes.io/name: rabbitmq
+  ports:
+    - name: amqp
+      port: 5672
+      targetPort: 5672
+    - name: management
+      port: 15672
+      targetPort: 15672
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: rabbitmq
+  namespace: scripulya
+  labels:
+    app.kubernetes.io/name: rabbitmq
+    app.kubernetes.io/part-of: scripulya
+spec:
+  serviceName: rabbitmq
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: rabbitmq
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: rabbitmq
+        app.kubernetes.io/part-of: scripulya
+    spec:
+      containers:
+        - name: rabbitmq
+          image: rabbitmq:3-management
+          ports:
+            - containerPort: 5672
+              name: amqp
+            - containerPort: 15672
+              name: management
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/rabbitmq
+            # subPath: mount only the file, NOT the whole /etc/rabbitmq dir — mounting
+            # the dir would mask the image's `enabled_plugins` and disable the
+            # management plugin (port 15672).
+            - name: config
+              mountPath: /etc/rabbitmq/rabbitmq.conf
+              subPath: rabbitmq.conf
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["rabbitmq-diagnostics", "-q", "ping"]
+            initialDelaySeconds: 40
+            periodSeconds: 30
+      volumes:
+        - name: config
+          configMap:
+            name: rabbitmq-config
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

@@ -1,0 +1,85 @@
+# PostgreSQL — the backend's database.
+#
+# The schema/test data come from `postgres-init-sql`, a ConfigMap generated at
+# deploy time from the sibling repo's init.sql:
+#     make gen-init-sql          # scripts/gen-init-sql-cm.sh
+# The official postgres image auto-runs *.sql in /docker-entrypoint-initdb.d ONLY
+# on the first init of the data volume (when the PVC is empty). See README for
+# how to force a re-seed.
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: scripulya
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: scripulya
+spec:
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+  namespace: scripulya
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/part-of: scripulya
+spec:
+  serviceName: postgres
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+        app.kubernetes.io/part-of: scripulya
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:15
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              value: dbname
+            - name: POSTGRES_USER
+              value: user
+            - name: POSTGRES_PASSWORD
+              value: password
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init-sql
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "user", "-d", "dbname"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "user", "-d", "dbname"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+      volumes:
+        - name: init-sql
+          configMap:
+            name: postgres-init-sql
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

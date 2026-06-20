@@ -1,0 +1,18 @@
+# Secrets — never commit real values
+.env
+.env.*
+!.env.example
+
+# Materialized k8s Secret manifests (keep the *.example.yaml only)
+k8s/**/*secret*.yaml
+!k8s/**/*secret*.example.yaml
+!k8s/02-secret.example.yaml
+
+# Built / exported container images
+*.tar
+
+# Editor / OS noise
+.idea/
+.vscode/
+.history/
+.DS_Store
