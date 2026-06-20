@@ -45,23 +45,6 @@ Two interchangeable run paths are provided:
 
 The backend delegates **all** real LLM calls to the worker over RabbitMQ. The only
 model the backend serves locally (no broker, no provider key) is `testing_mock`.
-
----
-
-## ⚠️ Security warning (read first)
-
-The sibling source repos contain **leaked credentials**. **Do not copy them** into
-this repo — generate fresh ones. Specifically:
-
-- A **GitHub PAT** embedded in both repos' `origin` git remotes (`ghp_…`).
-- A **ZAI API key** hardcoded as the default of `ZAI_API_KEY` in
-  `scripulya_agent/docker-compose.yml`.
-- A **Gemini API key** in `scripulya_ai/.env`.
-
-**Rotate all three** at their providers, then remove/replace them in the source
-repos. This deploy repo only ever holds placeholders (`.env.example` /
-`k8s/02-secret.example.yaml`); real values live in your local gitignored `.env`.
-
 ---
 
 ## Prerequisites
