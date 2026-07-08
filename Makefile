@@ -3,9 +3,10 @@
 #   * Docker Compose (primary, local):  make up | down | logs | ps | reseed
 #   * Kubernetes (target: kind):        make deploy-kind | status | pf | delete
 
-APPS_DIR  ?= ..
-NAMESPACE ?= scripulya
-IMAGE_TAG ?= dev
+APPS_DIR     ?= ..
+NAMESPACE    ?= scripulya
+IMAGE_TAG    ?= dev
+KIND_CLUSTER ?=
 
 # Base k8s manifests (excludes the optional ingress + mock-google).
 K8S_BASE = \
@@ -46,7 +47,7 @@ mock-down:  ## Stop the optional mock-google-api
 
 # ============================== Kubernetes ==================================
 .PHONY: gen-secrets gen-init-sql build-images load-kind apply deploy-kind \
-	apply-ingress status pf delete
+	apply-ingress status pf delete kind-stop kind-start kind-delete
 gen-secrets:  ## Create scripulya-secrets Secret from .env
 	APPS_DIR=$(APPS_DIR) NAMESPACE=$(NAMESPACE) bash scripts/gen-secrets.sh
 gen-init-sql: ## Create postgres-init-sql ConfigMap from sibling init.sql
@@ -71,3 +72,9 @@ pf:           ## Port-forward API (8000) + Rabbit mgmt UI (15672)
 	NAMESPACE=$(NAMESPACE) bash scripts/port-forward.sh
 delete:       ## Tear the whole namespace down (loses DB data)
 	kubectl delete namespace $(NAMESPACE)
+kind-stop:    ## Stop the kind cluster (frees its host ports; keeps cluster state)
+	KIND_CLUSTER=$(KIND_CLUSTER) bash scripts/kind-power.sh stop
+kind-start:   ## Start a previously stopped kind cluster again
+	KIND_CLUSTER=$(KIND_CLUSTER) bash scripts/kind-power.sh start
+kind-delete:  ## Delete the kind cluster entirely (frees ports; LOSES all state)
+	KIND_CLUSTER=$(KIND_CLUSTER) bash scripts/kind-power.sh delete

@@ -177,11 +177,23 @@ such as ingress-nginx on kind / Traefik on k3d — change `ingressClassName` in
 `k8s/30-ingress.yaml` accordingly). Add `scripulya.local` → the kind node IP in
 `/etc/hosts`.
 
+### Free the kind cluster's host ports (keep the cluster)
+
+A running kind cluster holds host ports — the API NodePort mapping (`:8000`),
+the API server port, etc. — which clashes with `make up` or other local
+services. **Stop** the cluster to release them without losing anything (pods, DB
+data all survive; bring it straight back with `kind-start`):
+
+```bash
+make kind-stop     # docker-stop the kind node(s): frees ports, keeps state
+make kind-start    # bring a stopped cluster back up
+```
+
 ### Teardown
 
 ```bash
 make delete        # deletes the whole namespace (loses DB data)
-kind delete cluster --name scripulya
+make kind-delete   # delete the kind cluster too (frees its host ports; all state lost)
 ```
 
 ---
@@ -223,7 +235,8 @@ source), so the mock is **off by default**. It only matters if you want to run t
   port. The broker's AMQP port (5672) is kept internal for this reason; the
   management UI defaults to host port **15673** (not 15672) to avoid clashing with
   a host-installed RabbitMQ. Override any host port in `.env`: `AI_PORT`,
-  `RABBIT_MGMT_PORT`.
+  `RABBIT_MGMT_PORT`. If port **8000** is held by a leftover kind cluster, free it
+  with `make kind-stop` (or `make kind-delete`).
 - **Worker shows 0 consumers / `llm.agent.request` missing:** the worker only
   declares the queue once it connects. Check `make logs-agent` for the `agent up`
   line and confirm RabbitMQ is healthy. With empty provider keys the worker still
@@ -254,5 +267,5 @@ scripulya_deploy/
 │   │                           postgres/rabbit StatefulSets, ai/agent Deployments,
 │   │                           optional ingress, optional mock-google)
 └── scripts/                  # gen-secrets.sh, gen-init-sql-cm.sh,
-                               # load-images-kind.sh, port-forward.sh
+                               # load-images-kind.sh, kind-power.sh, port-forward.sh
 ```
