@@ -180,6 +180,44 @@ services:
       start_period: 20s
 
   # ---------------------------------------------------------------------------
+  # One-shot MinIO seeder (the object-storage analogue of init.sql). Reuses the
+  # scripulya-ai:dev image built above (it already has python + minio SDK + psycopg2
+  # + the google-genai client). For every scene that has a media_assets row it
+  # generates an anime background from the scene's background_prompt and uploads it
+  # to scripulya-public at the row's object_key. init.sql is the single source of
+  # truth (prompt + object_key); this just executes it. Idempotent — skips objects
+  # already present unless FORCE_REGENERATE_MEDIA=1 — so it only spends API quota on
+  # a fresh MinIO volume (make reseed) or via `make regen-media`. No API key set =>
+  # logs a warning and exits 0 (the app still runs, just without seeded art). The app
+  # does NOT depend on this service, so it boots and serves immediately.
+  # ---------------------------------------------------------------------------
+  minio-init:
+    image: scripulya-ai:dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+asyncpg://user:password@postgres:5432/dbname
+      MINIO_INTERNAL_ENDPOINT: minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_BUCKET_PUBLIC: ${MINIO_BUCKET_PUBLIC:-scripulya-public}
+      MINIO_SECURE: "false"
+      # Falls back to GEMINI_API_KEY if IMAGE_API_KEY is unset. Without either, the
+      # script logs a warning and skips generation (non-fatal).
+      IMAGE_API_KEY: ${IMAGE_API_KEY:-${GEMINI_API_KEY:-}}
+      IMAGE_API_MODEL: ${IMAGE_API_MODEL:-imagen-4.0-generate-001}
+      FORCE_REGENERATE_MEDIA: ${FORCE_REGENERATE_MEDIA:-0}
+    volumes:
+      - ${APPS_DIR:-..}/scripulya_ai/scripts/seed_minio_media.py:/app/scripts/seed_minio_media.py:ro
+    command: ["python", "/app/scripts/seed_minio_media.py"]
+    restart: "no"
+    networks:
+      - scripulya-net
+
+  # ---------------------------------------------------------------------------
   # OPTIONAL (profile: mock-google). Offline mock of the Google AI endpoint.
   # Only useful to run the agent's Google/Gemini provider without network egress.
   # The backend itself never calls this host, so it is OFF by default.

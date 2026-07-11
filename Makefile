@@ -23,7 +23,7 @@ help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
 
 # ============================= Docker Compose ===============================
-.PHONY: up down restart logs logs-ai logs-agent ps reseed mock-up mock-down
+.PHONY: up down restart logs logs-ai logs-agent ps reseed seed-media regen-media mock-up mock-down
 up:         ## Build & start the full stack (postgres, rabbitmq, ai, agent)
 	docker compose up -d --build
 down:       ## Stop the stack (keeps data volume)
@@ -41,6 +41,10 @@ ps:         ## Show container status
 reseed:     ## Wipe the DB volume and re-seed from init.sql, then restart
 	docker compose down -v
 	docker compose up -d --build
+seed-media: ## (Re)run the MinIO scene-image seeder (skips objects already present)
+	docker compose run --rm minio-init
+regen-media: ## Force re-generate EVERY scene image (ignores existing objects)
+	FORCE_REGENERATE_MEDIA=1 docker compose run --rm minio-init
 mock-up:    ## Start the optional mock-google-api
 	docker compose --profile mock-google up -d --build mock-google-api
 mock-down:  ## Stop the optional mock-google-api
