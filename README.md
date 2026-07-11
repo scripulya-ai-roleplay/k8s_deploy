@@ -41,6 +41,12 @@ Two interchangeable run paths are provided:
    ┌───────────────────────┐
    │   postgres :5432      │  seeded from ../scripulya_ai/scripts/init.sql
    └───────────────────────┘
+
+   ┌───────────────────────┐
+   │   minio :9000/:9001   │  object storage for media (images)
+   │   buckets: -public    │  public  -> anonymous URL (no signature)
+   │            -private   │  private -> short-lived presigned URL (owner-only)
+   └───────────────────────┘
 ```
 
 The backend delegates **all** real LLM calls to the worker over RabbitMQ. The only
@@ -85,6 +91,10 @@ Then:
   → the `llm.agent.request` queue should show **1 consumer** (the worker). That is
   the end-to-end proof the backend ↔ worker wiring is healthy.
 - **Postgres:** `localhost:5432`, db `dbname`, user `user`, password `password`.
+- **MinIO console:** http://localhost:9001  (`minioadmin` / `minioadmin`) — browse
+  the `scripulya-public` / `scripulya-private` buckets (created by the backend on
+  first upload). The S3 API at `:9000` is what mobile/web clients hit via the
+  presigned/public image URLs returned by `GET/POST /api/v1/media`.
 
 Other targets: `make down`, `make restart`, `make reseed` (wipe + re-seed DB),
 `make mock-up` (optional mock — see below).
@@ -212,6 +222,36 @@ source), so the mock is **off by default**. It only matters if you want to run t
   (`k8s/mock-google/coredns-hosts-patch.yaml`) because Service names can't contain
   dots.
 
+## Media (images via MinIO)
+
+Images (character avatars, scene backgrounds, user profile pictures, …) live in
+MinIO and are exposed through the backend's media API:
+
+- `POST /api/v1/media` (multipart: `file`, `entity_type`, `entity_id`, `is_public`)
+  — upload an image. `is_public=true` lands it in the anonymous-read bucket;
+  `is_public=false` in the presigned-only bucket.
+- `GET /api/v1/media/{id}` — metadata + a `url` (stable public URL, short-lived
+  presigned URL, or the legacy external `file_url`). Public assets are reachable
+  anonymously; private assets only by their owner.
+- `GET /api/v1/media?entity_type=&entity_id=` — list media for an entity.
+- `DELETE /api/v1/media/{id}` — owner only.
+
+Clients fetch the image **bytes directly from MinIO** using the returned `url`;
+the backend never streams image bytes. The buckets (`scripulya-public` /
+`scripulya-private`) are created by the backend at startup (and lazily on first
+upload).
+
+`MINIO_PUBLIC_ENDPOINT` is load-bearing — it is the host embedded in every image
+URL and **must be reachable from the client**. It differs per run path:
+
+| Path | `MINIO_PUBLIC_ENDPOINT` |
+|------|-------------------------|
+| Compose | `localhost:9000` |
+| k8s (kind, NodePort 30900) | `localhost:30900` (needs a kind `extraPortMapping` for `containerPort: 30900`, or `make pf`) |
+| prod | real public DNS for the MinIO API |
+
+Set it wrong and every image URL 404s (presigned `Host` mismatch / unreachable).
+
 ## Troubleshooting
 
 - **`bind: address already in use` on start:** a host service already owns that
@@ -229,6 +269,14 @@ source), so the mock is **off by default**. It only matters if you want to run t
   normally allows it; if not, set a non-guest user and update `RABBIT_URL`.
 - **Postgres "no such table":** the DB wasn't (re-)initialized. The init script
   only runs on a fresh volume — see the re-seed steps above.
+- **Images 404 / `SignatureDoesNotMatch`:** the `url` was built with a
+  `MINIO_PUBLIC_ENDPOINT` the client cannot reach, or that differs from the host
+  MinIO actually serves on. Set it to the client-facing host (compose
+  `localhost:9000`, k8s NodePort `localhost:30900`, prod DNS) in `.env` (compose)
+  / the `scripulya-config` ConfigMap (k8s) and restart the backend.
+- **MinIO buckets missing / uploads fail:** the backend creates the buckets
+  lazily on first upload and best-effort at startup. Check the backend logs for a
+  MinIO connection error and confirm the `minio` container/pod is healthy.
 - **`make deploy-kind` images not found / `ImagePullBackOff`:** images must be
   loaded into kind first (`make load-kind` is part of `deploy-kind`); confirm
   `imagePullPolicy: Never` is set (it is) and the kind cluster you loaded into is

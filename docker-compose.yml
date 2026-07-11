@@ -40,12 +40,26 @@ services:
       LLM_AGENT_REQUEST_QUEUE: llm.agent.request
       LLM_AGENT_RESULT_QUEUE: llm.agent.result
       LLM_AGENT_TIMEOUT: "60"
+      # --- Object storage (MinIO) for media assets ---
+      # MINIO_PUBLIC_ENDPOINT is the host embedded in URLs given to clients (must
+      # be reachable FROM the client); the backend itself uses MINIO_INTERNAL_ENDPOINT.
+      MINIO_INTERNAL_ENDPOINT: minio:9000
+      MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-localhost:9000}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      MINIO_SECURE: "false"
+      MINIO_BUCKET_PUBLIC: ${MINIO_BUCKET_PUBLIC:-scripulya-public}
+      MINIO_BUCKET_PRIVATE: ${MINIO_BUCKET_PRIVATE:-scripulya-private}
+      MINIO_PRESIGN_EXPIRY_SECONDS: "900"
+      MEDIA_MAX_UPLOAD_BYTES: "10485760"
     networks:
       - scripulya-net
     depends_on:
       postgres:
         condition: service_healthy
       rabbitmq:
+        condition: service_healthy
+      minio:
         condition: service_healthy
     # The image's built-in HEALTHCHECK probes /health (added in scripulya_ai).
     # Override only to give a more generous start_period for cold broker/DB connects.
@@ -133,6 +147,39 @@ services:
       start_period: 20s
 
   # ---------------------------------------------------------------------------
+  # MinIO (S3-compatible object storage) for media assets (images). The backend
+  # provisions two buckets at startup: scripulya-public (anonymous read -> stable
+  # URLs) and scripulya-private (presigned URLs only). The S3 API port (9000) is
+  # published so clients fetch presigned/public image URLs directly from MinIO;
+  # the console (9001) is for browsing. The backend reaches MinIO over the
+  # internal network as minio:9000.
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    ports:
+      - "${MINIO_API_PORT:-9000}:9000" # S3 API (presigned + public URLs hit this)
+      - "${MINIO_CONSOLE_PORT:-9001}:9001" # web console
+    volumes:
+      - minio_data:/data
+    networks:
+      - scripulya-net
+    restart: unless-stopped
+    healthcheck:
+      # `mc` ships inside the minio image; alias the server as `local`, then probe.
+      test:
+        - "CMD-SHELL"
+        - >-
+          mc alias set local http://localhost:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" >/dev/null 2>&1 && mc ready local
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # ---------------------------------------------------------------------------
   # OPTIONAL (profile: mock-google). Offline mock of the Google AI endpoint.
   # Only useful to run the agent's Google/Gemini provider without network egress.
   # The backend itself never calls this host, so it is OFF by default.
@@ -154,3 +201,4 @@ networks:
 
 volumes:
   postgres_data:
+  minio_data:

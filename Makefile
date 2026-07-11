@@ -14,6 +14,7 @@ K8S_BASE = \
 	k8s/01-configmap.yaml \
 	k8s/10-postgres.yaml \
 	k8s/11-rabbitmq.yaml \
+	k8s/12-minio.yaml \
 	k8s/20-scripulya-ai.yaml \
 	k8s/21-scripulya-agent.yaml
 
@@ -59,7 +60,7 @@ load-kind:    ## Build images and load them into kind
 apply: ## Apply namespace, then secret + init.sql, then the base manifests
 	kubectl apply -f k8s/00-namespace.yaml
 	@$(MAKE) --no-print-directory gen-init-sql gen-secrets
-	kubectl apply -f k8s/01-configmap.yaml -f k8s/10-postgres.yaml -f k8s/11-rabbitmq.yaml
+	kubectl apply -f k8s/01-configmap.yaml -f k8s/10-postgres.yaml -f k8s/11-rabbitmq.yaml -f k8s/12-minio.yaml
 	kubectl apply -f k8s/20-scripulya-ai.yaml -f k8s/21-scripulya-agent.yaml
 deploy-kind:  ## Full local k8s deploy: build -> load -> apply
 	$(MAKE) load-kind

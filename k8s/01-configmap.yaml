@@ -26,6 +26,19 @@ data:
   LLM_AGENT_RESULT_QUEUE: llm.agent.result
   LLM_AGENT_TIMEOUT: "60"
 
+  # --- Object storage (MinIO) for media assets (backend) ---
+  # MINIO_INTERNAL_ENDPOINT is the in-cluster Service DNS the backend uses for data ops.
+  # MINIO_PUBLIC_ENDPOINT is the host embedded in URLs handed to clients — for local
+  # kind that is the NodePort (localhost:30900; needs a kind extraPortMapping or
+  # `make pf`); set real DNS in prod. A wrong value makes every image URL 404.
+  MINIO_INTERNAL_ENDPOINT: minio.scripulya.svc.cluster.local:9000
+  MINIO_PUBLIC_ENDPOINT: localhost:30900
+  MINIO_SECURE: "false"
+  MINIO_BUCKET_PUBLIC: scripulya-public
+  MINIO_BUCKET_PRIVATE: scripulya-private
+  MINIO_PRESIGN_EXPIRY_SECONDS: "900"
+  MEDIA_MAX_UPLOAD_BYTES: "10485760"
+
   # --- scripulya_agent (worker) ---
   LLM_REQUEST_QUEUE: llm.agent.request
   LLM_RESULT_QUEUE: llm.agent.result
