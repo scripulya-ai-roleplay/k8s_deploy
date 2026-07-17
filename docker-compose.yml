@@ -187,9 +187,12 @@ services:
   # to scripulya-public at the row's object_key. init.sql is the single source of
   # truth (prompt + object_key); this just executes it. Idempotent — skips objects
   # already present unless FORCE_REGENERATE_MEDIA=1 — so it only spends API quota on
-  # a fresh MinIO volume (make reseed) or via `make regen-media`. No API key set =>
-  # logs a warning and exits 0 (the app still runs, just without seeded art). The app
-  # does NOT depend on this service, so it boots and serves immediately.
+  # a fresh MinIO volume (make reseed) or via `make regen-media`. The host-mounted
+  # media-backup/ (MEDIA_BACKUP_DIR) is an offline cache: on a fresh volume the seeder
+  # restores PNGs from it instead of calling the image API, so `make up` after a
+  # `down -v` is free (no quota). No API key set => logs a warning and exits 0 (the
+  # app still runs, just without freshly seeded art — the cache still restores). The
+  # app does NOT depend on this service, so it boots and serves immediately.
   # ---------------------------------------------------------------------------
   minio-init:
     image: scripulya-ai:dev
@@ -210,8 +213,13 @@ services:
       IMAGE_API_KEY: ${IMAGE_API_KEY:-${GEMINI_API_KEY:-}}
       IMAGE_API_MODEL: ${IMAGE_API_MODEL:-imagen-4.0-generate-001}
       FORCE_REGENERATE_MEDIA: ${FORCE_REGENERATE_MEDIA:-0}
+      # Offline image cache: the seeder reads/writes pre-generated PNGs here instead of
+      # calling the image API. The bind mount below keeps it on the host, so it survives
+      # `docker compose down -v` — making a re-seed after a volume wipe free (no quota).
+      MEDIA_BACKUP_DIR: ${MEDIA_BACKUP_DIR:-/media-backup}
     volumes:
       - ${APPS_DIR:-..}/scripulya_ai/scripts/seed_minio_media.py:/app/scripts/seed_minio_media.py:ro
+      - ./media-backup:/media-backup
     command: ["python", "/app/scripts/seed_minio_media.py"]
     restart: "no"
     networks:

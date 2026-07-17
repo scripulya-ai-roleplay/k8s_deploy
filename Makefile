@@ -41,9 +41,9 @@ ps:         ## Show container status
 reseed:     ## Wipe the DB volume and re-seed from init.sql, then restart
 	docker compose down -v
 	docker compose up -d --build
-seed-media: ## (Re)run the MinIO scene-image seeder (skips objects already present)
+seed-media: ## (Re)run MinIO scene-image seeder (skips existing; restores from ./media-backup cache first, so free after a down -v)
 	docker compose run --rm minio-init
-regen-media: ## Force re-generate EVERY scene image (ignores existing objects)
+regen-media: ## Force re-generate EVERY scene image (ignores the cache AND existing objects)
 	FORCE_REGENERATE_MEDIA=1 docker compose run --rm minio-init
 mock-up:    ## Start the optional mock-google-api
 	docker compose --profile mock-google up -d --build mock-google-api
