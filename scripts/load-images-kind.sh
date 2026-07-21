@@ -14,14 +14,17 @@ command -v kind  >/dev/null || { echo "❌ kind not found" >&2; exit 1; }
 
 AI_DIR="$APPS_DIR/scripulya_ai"
 AGENT_DIR="$APPS_DIR/scripulya_agent"
+# scripulya_ai moved its Dockerfile into build/ (GITHUB-65); the agent's stays at the repo root.
+AI_DOCKERFILE="$AI_DIR/build/Dockerfile"
+AGENT_DOCKERFILE="$AGENT_DIR/Dockerfile"
 
-for d in "$AI_DIR" "$AGENT_DIR"; do
-  [ -f "$d/Dockerfile" ] || { echo "❌ Dockerfile not found in $d" >&2; exit 1; }
+for f in "$AI_DOCKERFILE" "$AGENT_DOCKERFILE"; do
+  [ -f "$f" ] || { echo "❌ Dockerfile not found: $f" >&2; exit 1; }
 done
 
 echo "🔨 Building images..."
-docker build -t "scripulya-ai:${IMAGE_TAG}"     "$AI_DIR"
-docker build -t "scripulya-agent:${IMAGE_TAG}"  "$AGENT_DIR"
+docker build -t "scripulya-ai:${IMAGE_TAG}"    "$AI_DIR" -f "$AI_DOCKERFILE"
+docker build -t "scripulya-agent:${IMAGE_TAG}" "$AGENT_DIR" -f "$AGENT_DOCKERFILE"
 
 IMAGES="scripulya-ai:${IMAGE_TAG} scripulya-agent:${IMAGE_TAG}"
 

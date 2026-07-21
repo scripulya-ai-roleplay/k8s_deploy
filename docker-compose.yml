@@ -1,30 +1,10 @@
-# =============================================================================
-# Unified local stack for scripulya_ai + scripulya_agent as ONE system.
-#
-# Services (default profile, `docker compose up`):
-#   postgres          PostgreSQL 15 — the backend's DB (seeded from init.sql)
-#   rabbitmq          shared broker between the backend and the LLM worker
-#   scripulya-ai      FastAPI HTTP backend (publishes LLMRequest, consumes LLMResult)
-#   scripulya-agent   FastStream worker (consumes LLMRequest, publishes LLMResult)
-#
-# Optional profile (`docker compose --profile mock-google up`):
-#   mock-google-api   offline mock of the Google AI endpoint (see README §mock)
-#
-# Build contexts point at the sibling repos: ../scripulya_ai and ../scripulya_agent.
-# Override with the APPS_DIR env var if this repo lives elsewhere, e.g.:
-#   APPS_DIR=/path/to/apps docker compose up
-# =============================================================================
-
 name: scripulya
 
 services:
-  # ---------------------------------------------------------------------------
-  # Backend: FastAPI HTTP server. Delegates LLM calls to the agent over RabbitMQ.
-  # ---------------------------------------------------------------------------
   scripulya-ai:
     build:
       context: ${APPS_DIR:-..}/scripulya_ai
-      dockerfile: Dockerfile
+      dockerfile: build/Dockerfile
     image: scripulya-ai:dev
     ports:
       - "${AI_PORT:-8000}:8000"
@@ -40,9 +20,6 @@ services:
       LLM_AGENT_REQUEST_QUEUE: llm.agent.request
       LLM_AGENT_RESULT_QUEUE: llm.agent.result
       LLM_AGENT_TIMEOUT: "60"
-      # --- Object storage (MinIO) for media assets ---
-      # MINIO_PUBLIC_ENDPOINT is the host embedded in URLs given to clients (must
-      # be reachable FROM the client); the backend itself uses MINIO_INTERNAL_ENDPOINT.
       MINIO_INTERNAL_ENDPOINT: minio:9000
       MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:-localhost:9000}
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
@@ -61,8 +38,7 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-    # The image's built-in HEALTHCHECK probes /health (added in scripulya_ai).
-    # Override only to give a more generous start_period for cold broker/DB connects.
+
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=5)"]
       interval: 30s
@@ -71,10 +47,6 @@ services:
       start_period: 20s
     restart: unless-stopped
 
-  # ---------------------------------------------------------------------------
-  # LLM worker: FastStream consumer. Consumes llm.agent.request, publishes
-  # llm.agent.result. Connects to the SAME broker as the backend.
-  # ---------------------------------------------------------------------------
   scripulya-agent:
     build:
       context: ${APPS_DIR:-..}/scripulya_agent
@@ -100,19 +72,13 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
-  # ---------------------------------------------------------------------------
-  # PostgreSQL 15. Schema + test data come from the backend's init.sql, mounted
-  # into docker-entrypoint-initdb.d (runs ONLY on first init of postgres_data).
-  # ---------------------------------------------------------------------------
   postgres:
     image: postgres:15
     environment:
       POSTGRES_DB: dbname
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
-    # Host port intentionally NOT published by default to avoid clashes with other
-    # local Postgres instances. The backend reaches it over the internal network as
-    # postgres:5432. To browse it from the host, add:  ports: ["5432:5432"]
+
     volumes:
       - postgres_data:/var/lib/postgresql/data
       - ${APPS_DIR:-..}/scripulya_ai/scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
@@ -125,13 +91,6 @@ services:
       timeout: 5s
       retries: 5
       start_period: 30s
-
-  # ---------------------------------------------------------------------------
-  # RabbitMQ broker + management UI. Shared by the backend and the worker.
-  # AMQP 5672 is kept internal-only (not published) to avoid host clashes;
-  # the management UI is published for convenience. Defaults to host port 15673
-  # to avoid colliding with a host-installed RabbitMQ (which already owns 15672).
-  # ---------------------------------------------------------------------------
   rabbitmq:
     image: rabbitmq:3-management
     ports:
@@ -146,14 +105,6 @@ services:
       retries: 5
       start_period: 20s
 
-  # ---------------------------------------------------------------------------
-  # MinIO (S3-compatible object storage) for media assets (images). The backend
-  # provisions two buckets at startup: scripulya-public (anonymous read -> stable
-  # URLs) and scripulya-private (presigned URLs only). The S3 API port (9000) is
-  # published so clients fetch presigned/public image URLs directly from MinIO;
-  # the console (9001) is for browsing. The backend reaches MinIO over the
-  # internal network as minio:9000.
-  # ---------------------------------------------------------------------------
   minio:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     command: ["server", "/data", "--console-address", ":9001"]
@@ -169,7 +120,6 @@ services:
       - scripulya-net
     restart: unless-stopped
     healthcheck:
-      # `mc` ships inside the minio image; alias the server as `local`, then probe.
       test:
         - "CMD-SHELL"
         - >-
@@ -179,21 +129,6 @@ services:
       retries: 5
       start_period: 20s
 
-  # ---------------------------------------------------------------------------
-  # One-shot MinIO seeder (the object-storage analogue of init.sql). Reuses the
-  # scripulya-ai:dev image built above (it already has python + minio SDK + psycopg2
-  # + the google-genai client). For every scene that has a media_assets row it
-  # generates an anime background from the scene's background_prompt and uploads it
-  # to scripulya-public at the row's object_key. init.sql is the single source of
-  # truth (prompt + object_key); this just executes it. Idempotent — skips objects
-  # already present unless FORCE_REGENERATE_MEDIA=1 — so it only spends API quota on
-  # a fresh MinIO volume (make reseed) or via `make regen-media`. The host-mounted
-  # media-backup/ (MEDIA_BACKUP_DIR) is an offline cache: on a fresh volume the seeder
-  # restores PNGs from it instead of calling the image API, so `make up` after a
-  # `down -v` is free (no quota). No API key set => logs a warning and exits 0 (the
-  # app still runs, just without freshly seeded art — the cache still restores). The
-  # app does NOT depend on this service, so it boots and serves immediately.
-  # ---------------------------------------------------------------------------
   minio-init:
     image: scripulya-ai:dev
     depends_on:
@@ -208,14 +143,9 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
       MINIO_BUCKET_PUBLIC: ${MINIO_BUCKET_PUBLIC:-scripulya-public}
       MINIO_SECURE: "false"
-      # Falls back to GEMINI_API_KEY if IMAGE_API_KEY is unset. Without either, the
-      # script logs a warning and skips generation (non-fatal).
       IMAGE_API_KEY: ${IMAGE_API_KEY:-${GEMINI_API_KEY:-}}
       IMAGE_API_MODEL: ${IMAGE_API_MODEL:-imagen-4.0-generate-001}
       FORCE_REGENERATE_MEDIA: ${FORCE_REGENERATE_MEDIA:-0}
-      # Offline image cache: the seeder reads/writes pre-generated PNGs here instead of
-      # calling the image API. The bind mount below keeps it on the host, so it survives
-      # `docker compose down -v` — making a re-seed after a volume wipe free (no quota).
       MEDIA_BACKUP_DIR: ${MEDIA_BACKUP_DIR:-/media-backup}
     volumes:
       - ${APPS_DIR:-..}/scripulya_ai/scripts/seed_minio_media.py:/app/scripts/seed_minio_media.py:ro
@@ -225,11 +155,6 @@ services:
     networks:
       - scripulya-net
 
-  # ---------------------------------------------------------------------------
-  # OPTIONAL (profile: mock-google). Offline mock of the Google AI endpoint.
-  # Only useful to run the agent's Google/Gemini provider without network egress.
-  # The backend itself never calls this host, so it is OFF by default.
-  # ---------------------------------------------------------------------------
   mock-google-api:
     profiles: ["mock-google"]
     build:
