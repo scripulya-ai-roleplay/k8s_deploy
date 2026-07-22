@@ -89,6 +89,22 @@ spec:
                   except OSError:
                       time.sleep(2)
               sys.exit(1)
+        - name: wait-for-redis
+          image: scripulya-ai:dev
+          imagePullPolicy: Never
+          command: ["python", "-c"]
+          args:
+            - |
+              import socket, sys, time
+              host, port = "redis", 6379
+              for _ in range(60):
+                  try:
+                      with socket.create_connection((host, port), 3):
+                          print(f"connected to {host}:{port}")
+                          sys.exit(0)
+                  except OSError:
+                      time.sleep(2)
+              sys.exit(1)
       containers:
         - name: scripulya-ai
           image: scripulya-ai:dev

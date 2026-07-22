@@ -15,6 +15,9 @@ metadata:
 data:
   # --- shared ---
   RABBIT_URL: amqp://guest:guest@rabbitmq.scripulya.svc.cluster.local:5672/
+  # Redis is the heartbeat/liveness store between the backend and the worker
+  # (token streaming will reuse it later). db 0.
+  REDIS_URL: redis://redis.scripulya.svc.cluster.local:6379/0
   DEBUG: "false"
 
   # --- scripulya_ai (backend) ---
