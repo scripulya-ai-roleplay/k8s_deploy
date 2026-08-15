@@ -3,7 +3,7 @@ name: scripulya
 services:
   scripulya-ai:
     build:
-      context: ${APPS_DIR:-..}/scripulya_ai
+      context: ${APPS_DIR:-..}/dreamescape_ai
       dockerfile: build/Dockerfile
     image: scripulya-ai:dev
     ports:
@@ -19,6 +19,8 @@ services:
       RABBIT_URL: amqp://guest:guest@rabbitmq:5672/
       LLM_AGENT_REQUEST_QUEUE: llm.agent.request
       LLM_AGENT_RESULT_QUEUE: llm.agent.result
+      SUMMARY_REQUEST_QUEUE: llm.summary.request
+      SUMMARY_RESULT_QUEUE: llm.summary.result
       LLM_AGENT_TIMEOUT: "60"
       REDIS_URL: redis://redis:6379/0
       MINIO_INTERNAL_ENDPOINT: minio:9000
@@ -61,7 +63,8 @@ services:
 
   scripulya-agent:
     build:
-      context: ${APPS_DIR:-..}/scripulya_agent
+      # context: ${APPS_DIR:-..}/scripulya_agent
+      context: ${APPS_DIR:-..}/llm_api_agent
       dockerfile: Dockerfile
     image: scripulya-agent:dev
     environment:
@@ -87,6 +90,41 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  ollama:
+    &ollama
+    image: ollama/ollama:0.32.6-rocm
+    container_name: ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    environment:
+      OLLAMA_HOST: 0.0.0.0
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: unless-stopped
+    networks:
+      - scripulya-net
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+
+  ollama-init:
+    <<: *ollama
+    container_name: ollama-init
+    command: pull qwen3:0.6b
+    ports: []
+    healthcheck:
+      disable: true
+    environment:
+      OLLAMA_HOST: ollama:11434
+    depends_on:
+      ollama:
+        condition: service_healthy
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: "no"
+
   postgres:
     image: pgvector/pgvector:pg15
     environment:
@@ -96,7 +134,7 @@ services:
 
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ${APPS_DIR:-..}/scripulya_ai/scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - ${APPS_DIR:-..}/dreamescape_ai/scripts/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     networks:
       - scripulya-net
     restart: unless-stopped
@@ -196,8 +234,8 @@ services:
       FORCE_REGENERATE_MEDIA: ${FORCE_REGENERATE_MEDIA:-0}
       MEDIA_BACKUP_DIR: ${MEDIA_BACKUP_DIR:-/media-backup}
     volumes:
-      - ${APPS_DIR:-..}/scripulya_ai/scripts/seed_minio_media.py:/app/scripts/seed_minio_media.py:ro
       - ./media-backup:/media-backup
+      - ${APPS_DIR:-..}/dreamescape_ai/scripts/seed_minio_media.py:/app/scripts/seed_minio_media.py:ro
     command: ["python", "/app/scripts/seed_minio_media.py"]
     restart: "no"
     networks:
@@ -206,7 +244,7 @@ services:
   mock-google-api:
     profiles: ["mock-google"]
     build:
-      context: ${APPS_DIR:-..}/scripulya_ai
+      context: ${APPS_DIR:-..}/dreamescape_ai
       dockerfile: google_api_mock/Dockerfile
     image: scripulya-mock-google-api:dev
     networks:
@@ -223,3 +261,4 @@ volumes:
   minio_data:
   redis_data:
   falkordb_data:
+  ollama_data:
