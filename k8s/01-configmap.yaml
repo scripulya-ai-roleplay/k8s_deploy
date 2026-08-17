@@ -56,6 +56,7 @@ data:
   LLM_REQUEST_QUEUE: llm.agent.request
   LLM_RESULT_QUEUE: llm.agent.result
   ZAI_BASE_URL: https://api.z.ai/api/paas/v4
+  QWEN_BASE_URL: https://dashscope.aliyuncs.com/compatible-mode/v1
   DEEPSEEK_BASE_URL: https://api.deepseek.com
   LLM_TEMPERATURE: "0.7"
   LLM_MAX_TOKENS: "4096"
