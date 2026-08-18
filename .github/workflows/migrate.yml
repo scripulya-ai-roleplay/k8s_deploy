@@ -137,7 +137,10 @@ jobs:
               echo "!! scripulya-postgres-1 exists but is not running" >&2
               exit 1
             fi
-            docker exec scripulya-postgres-1 sh -c "pg_isready -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\""
+            # pg_isready prints to stdout; keep that out of $( ) so CONTAINER
+            # captures only the container name (a two-line value made the
+            # daemon 404 on "page not found" for the exec API call).
+            docker exec scripulya-postgres-1 sh -c "pg_isready -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\"" >&2
             echo scripulya-postgres-1')
           echo "==> Postgres container: $CONTAINER"
 
