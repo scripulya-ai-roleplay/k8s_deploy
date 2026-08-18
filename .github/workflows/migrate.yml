@@ -1,0 +1,156 @@
+name: MIGRATE
+
+# Applies pending SQL migrations to the VPS Postgres over the same WireGuard +
+# SSH path the deploy workflow uses. Manual button only — migrations are
+# deliberate, never automatic.
+#
+# The runner sparse-checkouts the backend repo (dreamescape_ai) for
+# scripts/migrations/ + apply_migrations.sh, rsyncs them to the VPS, then runs
+# the applier inside the postgres container via docker exec. The applier tracks
+# applied files in the schema_migrations table, so pressing the button when
+# nothing is pending is a no-op.
+#
+# The job declares environment: production, which is expected to be configured
+# in repo settings with required reviewers — that gate is what enforces
+# "deliberate, never automatic" for prod DDL. The backend_ref input exists for
+# testing a migration from a feature branch before it merges; leave it empty
+# for the normal main-branch run.
+#
+# One-time setup: none beyond the deploy workflow's (same WireGuard peer, SSH
+# key and VPS_*/WG_*/SSH_PRIVATE_KEY secrets; see docs/DEPLOY.md) plus creating
+# the "production" environment with reviewers.
+
+on:
+  workflow_dispatch:
+    inputs:
+      backend_ref:
+        description: "Backend repo ref to take migrations from (default: main)"
+        default: ""
+        required: false
+      dry_run:
+        description: "Only list pending migrations (applies nothing)"
+        type: boolean
+        default: false
+
+concurrency:
+  group: vps-migrate
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    steps:
+      - name: Checkout deploy repo
+        uses: actions/checkout@v4
+
+      - name: Checkout backend (for scripts/migrations + applier)
+        uses: actions/checkout@v4
+        with:
+          repository: scripulya-ai-roleplay/dreamescape_ai
+          ref: ${{ inputs.backend_ref || '' }}
+          path: ai-src
+          sparse-checkout: |
+            scripts
+
+      # ── 1. WireGuard tunnel (same shape as the deploy workflow) ────────────
+      - name: Bring up WireGuard tunnel
+        env:
+          WG_PRIVATE_KEY:      ${{ secrets.WG_PRIVATE_KEY }}
+          WG_ADDRESS:          ${{ secrets.WG_ADDRESS }}
+          WG_PEER_PUBLIC_KEY:  ${{ secrets.WG_PEER_PUBLIC_KEY }}
+          WG_PRESHARED_KEY:    ${{ secrets.WG_PRESHARED_KEY }}
+          WG_ENDPOINT:         ${{ secrets.WG_ENDPOINT }}
+          WG_PEER_ALLOWED_IPS: ${{ secrets.WG_PEER_ALLOWED_IPS }}
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq && sudo apt-get install -y -qq wireguard-tools >/dev/null
+          cat > /tmp/wg0.conf <<EOF
+          [Interface]
+          PrivateKey = ${WG_PRIVATE_KEY}
+          Address = ${WG_ADDRESS}
+
+          [Peer]
+          PublicKey = ${WG_PEER_PUBLIC_KEY}
+          $(if [ -n "${WG_PRESHARED_KEY}" ]; then echo "PresharedKey = ${WG_PRESHARED_KEY}"; fi)
+          AllowedIPs = ${WG_PEER_ALLOWED_IPS}
+          Endpoint = ${WG_ENDPOINT}
+          PersistentKeepalive = 25
+          EOF
+          sudo chmod 600 /tmp/wg0.conf
+          sudo wg-quick up /tmp/wg0.conf
+          sudo wg show
+
+      - name: Verify tunnel reachability
+        env:
+          VPS_WG_IP: ${{ secrets.VPS_WG_IP }}
+        run: ping -c 3 -W 3 "$VPS_WG_IP"
+
+      # ── 2. SSH config ───────────────────────────────────────────────────────
+      - name: Configure SSH
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
+          VPS_WG_IP:       ${{ secrets.VPS_WG_IP }}
+          VPS_SSH_PORT:    ${{ secrets.VPS_SSH_PORT }}
+          VPS_SSH_USER:    ${{ secrets.VPS_SSH_USER }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat > ~/.ssh/config <<EOF
+          Host vps
+            HostName ${VPS_WG_IP}
+            Port ${VPS_SSH_PORT:-22}
+            User ${VPS_SSH_USER:-deploy}
+            IdentityFile ~/.ssh/id_ed25519
+            IdentitiesOnly yes
+            StrictHostKeyChecking accept-new
+            UserKnownHostsFile ~/.ssh/known_hosts
+          EOF
+          chmod 600 ~/.ssh/config
+
+      # ── 3. Ship the migrations + applier ───────────────────────────────────
+      - name: Sync migrations to VPS
+        run: |
+          set -euo pipefail
+          ssh vps "mkdir -p ~/scripulya-migrate"
+          rsync -az --delete ai-src/scripts/migrations/ vps:scripulya-migrate/migrations/
+          rsync -az ai-src/scripts/apply_migrations.sh vps:scripulya-migrate/
+
+      # ── 4. Run (or preview) ─────────────────────────────────────────────────
+      # The postgres container name on the VPS is fixed by the compose files
+      # (project scripulya, service postgres → scripulya-postgres-1), so match
+      # the exact name and verify readiness with pg_isready before any DDL.
+      - name: Apply migrations
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          CONTAINER=$(ssh vps 'set -e
+            if ! docker ps -a --format "{{.Names}}" | grep -qx "scripulya-postgres-1"; then
+              echo "!! container scripulya-postgres-1 not found on VPS" >&2
+              exit 1
+            fi
+            if [ "$(docker inspect -f "{{.State.Running}}" scripulya-postgres-1)" != "true" ]; then
+              echo "!! scripulya-postgres-1 exists but is not running" >&2
+              exit 1
+            fi
+            docker exec scripulya-postgres-1 sh -c "pg_isready -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\""
+            echo scripulya-postgres-1')
+          echo "==> Postgres container: $CONTAINER"
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "==> Dry run: pending migrations are the ones the applier would print 'apply' for"
+            ssh vps "cd ~/scripulya-migrate && bash apply_migrations.sh '$CONTAINER' --dry-run" || true
+          else
+            ssh vps "cd ~/scripulya-migrate && bash apply_migrations.sh '$CONTAINER'"
+          fi
+
+      # ── 5. Always tear the tunnel down ──────────────────────────────────────
+      - name: Tear down WireGuard tunnel
+        if: always()
+        run: |
+          sudo wg-quick down /tmp/wg0.conf 2>/dev/null || true
+          sudo rm -f /tmp/wg0.conf

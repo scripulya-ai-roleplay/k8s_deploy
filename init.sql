@@ -1,0 +1,384 @@
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+
+DROP TABLE IF EXISTS media_assets CASCADE;
+DROP TABLE IF EXISTS messages CASCADE;
+DROP TABLE IF EXISTS chat_settings CASCADE;
+DROP TABLE IF EXISTS chats CASCADE;
+DROP TABLE IF EXISTS scene_initial_messages CASCADE;
+DROP TABLE IF EXISTS scene_bookmarks CASCADE;
+DROP TABLE IF EXISTS character_bookmarks CASCADE;
+DROP TABLE IF EXISTS scene_likes CASCADE;
+DROP TABLE IF EXISTS character_likes CASCADE;
+DROP TABLE IF EXISTS character_scene CASCADE;
+DROP TABLE IF EXISTS scenes CASCADE;
+DROP TABLE IF EXISTS characters CASCADE;
+DROP TABLE IF EXISTS users CASCADE;
+
+CREATE TABLE users (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    username VARCHAR(100) UNIQUE,  -- single canonical identity: login + /users/search both resolve here
+    password_hash TEXT,
+    google_id VARCHAR(255) UNIQUE,
+    role VARCHAR(20) NOT NULL DEFAULT 'api' CHECK (role IN ('admin', 'api', 'developer')),
+    crystal_balance INTEGER DEFAULT 1000
+);
+
+CREATE TABLE characters (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name VARCHAR(255) NOT NULL,
+    system_prompt TEXT NOT NULL,
+    is_public BOOLEAN DEFAULT false
+);
+
+CREATE TABLE scenes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    owner_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    description TEXT,
+    background_prompt TEXT NOT NULL,
+    is_public BOOLEAN NOT NULL DEFAULT false
+);
+
+CREATE TABLE scene_initial_messages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    scene_id UUID NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
+    text TEXT NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_scene_initial_messages_scene_id ON scene_initial_messages(scene_id);
+
+CREATE TABLE character_scene (
+    character_id UUID NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+    scene_id UUID NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
+    attached_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),  -- attachment order: "first attached character" = lowest attached_at; clock_timestamp() (per-statement wall clock), not NOW() (per-transaction), so same-transaction batch attachments order correctly
+    PRIMARY KEY (character_id, scene_id)
+);
+
+CREATE TABLE character_likes (
+    character_id UUID NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (character_id, user_id)
+);
+CREATE TABLE scene_likes (
+    scene_id UUID NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (scene_id, user_id)
+);
+CREATE TABLE character_bookmarks (
+    character_id UUID NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (character_id, user_id)
+);
+CREATE TABLE scene_bookmarks (
+    scene_id UUID NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    PRIMARY KEY (scene_id, user_id)
+);
+
+CREATE TABLE chats (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name TEXT NOT NULL,
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    scene_id UUID REFERENCES scenes(id) ON DELETE SET NULL,
+    user_character_id UUID REFERENCES characters(id) ON DELETE SET NULL,  -- persona the user plays as in this chat
+    initial_message_id UUID REFERENCES scene_initial_messages(id) ON DELETE SET NULL,  -- chosen greeting, set when the user picks one inside the chat
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_chats_user_id ON chats(user_id);
+
+CREATE INDEX idx_chats_scene_id ON chats(scene_id);
+
+CREATE INDEX idx_chats_user_character_id ON chats(user_character_id);
+
+CREATE INDEX idx_chats_initial_message_id ON chats(initial_message_id);
+
+CREATE TABLE chat_settings (
+    chat_id UUID PRIMARY KEY REFERENCES chats(id) ON DELETE CASCADE,
+    settings JSONB NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE TABLE messages (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    chat_id UUID NOT NULL REFERENCES chats(id) ON DELETE CASCADE,
+    role VARCHAR(50) NOT NULL CHECK (role IN ('user', 'model')),
+    content TEXT NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'completed' CHECK (status IN ('pending', 'completed', 'failed')),
+    cost_crystals INTEGER DEFAULT 0,
+    reasoning TEXT,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+CREATE INDEX idx_messages_chat_id ON messages(chat_id);
+
+CREATE TABLE media_assets (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    object_key TEXT,                                    -- MinIO/S3 object key (NULL for legacy external URLs)
+    bucket VARCHAR(63),                                 -- which bucket the object lives in (NULL for legacy)
+    file_url TEXT,                                      -- legacy/external absolute URL (NULL for managed uploads)
+    content_type VARCHAR(100) NOT NULL DEFAULT 'image/png',
+    size_bytes BIGINT NOT NULL DEFAULT 0,
+    entity_type VARCHAR(100) NOT NULL,                  -- 'character' | 'scene' | 'user'
+    entity_id UUID NOT NULL,
+    is_public BOOLEAN NOT NULL DEFAULT false,
+    sort_order INTEGER NOT NULL DEFAULT 0,              -- user-defined position within the entity (renumbered 0..n-1 by clients)
+    caption VARCHAR(200),                               -- short user annotation
+    layer VARCHAR(20) NOT NULL DEFAULT 'background' CHECK (layer IN ('background', 'foreground')),
+    owner_id UUID REFERENCES users(id) ON DELETE SET NULL,  -- uploader (NULL for legacy/seeded rows)
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    CHECK (object_key IS NOT NULL OR file_url IS NOT NULL)
+);
+
+CREATE INDEX idx_media_entity ON media_assets(entity_type, entity_id);
+
+
+INSERT INTO users (id, username, google_id, role, crystal_balance) VALUES
+    ('00000000-0000-0000-0000-000000000001', 'mobile',    'mobile@mobile.net',   'api',       1000),
+    ('5dbdc924-968a-4c50-94a8-44cdd165e460', 'admin',     'admin@google.com',    'admin',     5000),
+    ('f5ac5447-d562-4d7b-91fb-dc4d5bcc4395', 'api',       'api@google.com',      'api',       3000),
+    ('4954ef15-b75b-4f92-b32c-ded5e80ce802', 'developer', 'dev@google.com',      'developer', 1000),
+    ('4e50271e-2b64-46e4-b312-580782ea6549', 'user',      'user@google.com',     'api',       2000),
+    ('e5fd1874-a299-4c22-b6b5-af4e00b796a7', 'premium',   'premium@google.com',  'api',       10000),
+    ('c23dc540-a0ba-4d83-ac7b-d0f8eab9d463', 'broke',     'broke@google.com',    'api',       0),
+    ('f3ba11a5-4026-4c16-9aed-061f0d490ade', 'newbie',    'new@google.com',      'api',       1000),
+    ('7edb0c2c-8dcd-402a-a979-cc7853d9b627', 'longname',  'longname@google.com', 'api',       500),
+    ('53c41979-a116-4bb7-8281-57fadfd89a13', 'inactive',  'inactive@google.com', 'api',       2500);
+
+
+UPDATE users SET password_hash = '$argon2id$v=19$m=65536,t=3,p=4$qXUelaeIrpiI270hrsHowQ$G5DMjlQlJYB354uQujZoptA6LKecJ9UBdznlm/1ZOiY'
+WHERE username IN ('mobile', 'admin', 'api', 'developer');
+
+INSERT INTO characters (id, owner_id, name, system_prompt, is_public) VALUES
+    ('43341001-4ea1-4f03-b315-811d3264b6a3', '5dbdc924-968a-4c50-94a8-44cdd165e460', 'Helpful Assistant', 'A warm, endlessly patient companion who delights in helping others. Cheerful and encouraging, she explains things simply and never condescendingly, always leaving people feeling capable and cared for.', true),
+    ('1a0fca84-996c-43b5-976a-0c676c61dde5', 'f5ac5447-d562-4d7b-91fb-dc4d5bcc4395', 'Code Mentor', 'A seasoned software engineer with decades of war stories. Speaks with calm authority, sprinkles in dry humor, and guides others to the answer rather than handing it over. Never impatient, always curious.', true),
+    ('08f6aff7-e5c6-4e96-b4f7-971e03cb81f8', '4954ef15-b75b-4f92-b32c-ded5e80ce802', 'Creative Writer', 'A dreamy, irrepressibly imaginative storyteller who sees narrative threads in everything. Speaks in vivid metaphors, lights up at a good idea, and gently coaxes bold, surprising stories out of anyone.', false),
+    ('3a50caae-9f5d-4be3-882b-f17cdc10d0e3', '4e50271e-2b64-46e4-b312-580782ea6549', 'Math Tutor', 'A patient, methodical tutor who treats every problem like a puzzle worth savoring. Breaks daunting concepts into small confident steps, celebrates partial progress, and never makes anyone feel slow.', true),
+    ('117737b7-e183-4aac-9a09-47a45c3d6f58', 'e5fd1874-a299-4c22-b6b5-af4e00b796a7', 'Dr. Sophisticated Character Name With Very Long Title For Testing Purposes', 'An erudite polymath of regal bearing who has mastered a dozen disciplines. Speaks in elaborate, beautifully structured sentences, quotes obscure philosophers, and tailors the depth of every explanation to the listener. Charmingly long-winded, endlessly knowledgeable, and never dull. A deliberately long prompt to exercise large-text handling end to end.', true),
+    ('8ed61d7f-27db-4bef-a583-98a0d703ea66', 'c23dc540-a0ba-4d83-ac7b-d0f8eab9d463', 'Simple Bot', 'A stoic, monosyllabic wanderer of few words. Each utterance is deliberate and stripped to the bone: a nod, a grunt, a single telling sentence. Says almost nothing, yet somehow always says enough.', false),
+    ('8abecb4a-8d05-4d24-8fab-31ea776640f2', 'f3ba11a5-4026-4c16-9aed-061f0d490ade', 'Gaming Companion', 'An irrepressibly enthusiastic gamer who lives and breathes virtual worlds. Talks fast, gets hyped about builds and strategies, cracks jokes, and is the most loyal co-op partner anyone could ask for.', true),
+    ('84d54c1c-6837-44bf-ad31-26c78729a42c', '7edb0c2c-8dcd-402a-a979-cc7853d9b627', 'Meditation Guide', 'A serene, softly spoken guide who radiates calm. Moves slowly, breathes audibly, and leads others into stillness with gentle, unhurried words, never rushing, never judging.', false),
+    ('9a6cf9ec-11d7-471b-8678-c8651b8f331f', '53c41979-a116-4bb7-8281-57fadfd89a13', 'Travel Advisor', 'A well-traveled, worldly guide who has wandered every corner of the map. Speaks with warm authority, peppers stories with sensory detail, and tailors every recommendation to the dreams of each traveler.', true),
+    ('83855bba-0735-4f4c-93c2-00c253b5d43c', '00000000-0000-0000-0000-000000000001', 'Alizee', 'Alizee is a professional witch. She is whimsical and unpredictable, weaving mischief and arcane wisdom in equal measure.', false),
+    ('1590de4d-c0e1-4ca1-aa98-a15312aadf41', '00000000-0000-0000-0000-000000000001', 'Olegus', 'Olegus is a loud, good-natured but dim-witted tavern drunkard. He speaks in boisterous broken sentences, loves cheap ale above all else, and dispenses confident but nonsensical advice. Easily confused by big words, quick to laugh, and fiercely loyal to anyone who buys him a drink.', false);
+
+INSERT INTO scenes (id, owner_id, title, description, background_prompt) VALUES
+    ('5c194d75-401f-4fa2-808c-7092153135b7', '5dbdc924-968a-4c50-94a8-44cdd165e460', 'E2E Test Scene', 'A test scene specifically for e2e tests', 'This is a test scene for e2e testing purposes.'),
+    ('e971d123-2f76-4022-87e6-79fc372cbbf3', '5dbdc924-968a-4c50-94a8-44cdd165e460', 'Office Environment', 'A professional workspace designed for productive conversations and collaborative work sessions.', 'You are in a modern office setting with computers, whiteboards, and a collaborative atmosphere. The conversation takes place during work hours.'),
+    ('641e5f5d-73ea-4ef0-864c-2cb19f311b11', 'f5ac5447-d562-4d7b-91fb-dc4d5bcc4395', 'Cozy Coffee Shop', 'A warm and inviting café atmosphere perfect for relaxed, informal conversations over coffee.', 'You are sitting in a warm, cozy coffee shop with soft lighting, the aroma of fresh coffee, and gentle background music. Perfect for casual conversations.'),
+    ('414e2a88-2376-46bd-bde7-06c7a514e0d4', '4954ef15-b75b-4f92-b32c-ded5e80ce802', 'Library Study Room', 'A quiet academic environment ideal for focused learning and educational discussions.', 'You are in a quiet library study room surrounded by books and academic resources. The atmosphere is focused and conducive to learning.'),
+    ('7a587ee5-d55f-4d09-9ced-927ecc059ff0', '4e50271e-2b64-46e4-b312-580782ea6549', 'Virtual Reality Space', 'An immersive digital environment where imagination and technology merge for limitless possibilities.', 'You are in a futuristic virtual reality environment where anything is possible. The digital landscape can change based on the conversation.'),
+    ('f08f390a-1237-4bfa-9e53-6980dbb5aa0d', 'e5fd1874-a299-4c22-b6b5-af4e00b796a7', 'Minimalist Scene', NULL, 'Simple background.'),
+    ('c7e7899e-ac69-4024-a79c-252531920cd2', 'c23dc540-a0ba-4d83-ac7b-d0f8eab9d463', 'Epic Fantasy Adventure Scene With Extremely Long Title That Tests The Maximum Length Limits', 'This is an extremely detailed and comprehensive scene description that goes on for a very long time to test the database storage capabilities and API handling of large text fields. The scene depicts a vast fantasy realm filled with magical creatures, ancient castles, mystical forests, flowing rivers, towering mountains, and endless adventures waiting to be discovered. Heroes from all walks of life gather here to embark on epic quests, forge legendary weapons, learn powerful spells, and create lasting friendships. The atmosphere is rich with magic, wonder, and endless possibilities for storytelling and character development.', 'You find yourself in a breathtaking fantasy realm where magic flows through every blade of grass, every stone, and every breath of wind. Ancient dragons soar overhead, their scales glinting in the eternal twilight. Mystical forests whisper secrets of ages past, while crystal-clear streams carry the songs of woodland spirits. Here, time moves differently, and every choice you make shapes the very fabric of this magical world.'),
+    ('2f263740-29f7-4622-b4ce-fd7ac29d04d5', 'f3ba11a5-4026-4c16-9aed-061f0d490ade', 'Beach Resort Paradise', 'Tropical paradise with white sand beaches, crystal clear waters, and endless sunshine.', 'You are relaxing on a pristine tropical beach with gentle waves lapping at the shore, palm trees swaying in the warm breeze, and the sound of seagulls in the distance.'),
+    ('5277db85-10c6-4f12-ab23-810f289ca6df', '7edb0c2c-8dcd-402a-a979-cc7853d9b627', 'Space Station Alpha', 'Advanced space station orbiting Earth with cutting-edge technology and stunning views.', 'You are aboard a sophisticated space station with panoramic views of Earth below, advanced control systems, and the vastness of space surrounding you.'),
+    ('e1daa2c4-3c0b-4ac5-9937-c9540f80c85e', '53c41979-a116-4bb7-8281-57fadfd89a13', 'Underground Laboratory', 'Secret research facility beneath the city for conducting advanced experiments.', 'You are in a high-tech underground laboratory filled with mysterious equipment, glowing screens, and the hum of advanced machinery.');
+
+-- One initial message per scene (the former initial_message_text), with fixed UUIDs so
+-- seeded chats can reference them below. Each scene here offers exactly one greeting.
+INSERT INTO scene_initial_messages (id, scene_id, text) VALUES
+    ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0001', '5c194d75-401f-4fa2-808c-7092153135b7', 'Welcome to the e2e test scene!'),
+    ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0002', 'e971d123-2f76-4022-87e6-79fc372cbbf3', 'Welcome to our professional workspace! I''m here to help you with any business-related questions or collaborative projects. What can I assist you with today?'),
+    ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0003', '641e5f5d-73ea-4ef0-864c-2cb19f311b11', 'Welcome to our cozy corner of the coffee shop! The aroma of freshly brewed coffee fills the air. What would you like to chat about while we enjoy this peaceful atmosphere?'),
+    ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0004', '414e2a88-2376-46bd-bde7-06c7a514e0d4', 'Welcome to our quiet study sanctuary! I''m here to help you explore knowledge and dive deep into learning. What subject would you like to discuss today?'),
+    ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0005', '7a587ee5-d55f-4d09-9ced-927ecc059ff0', 'Welcome to the infinite possibilities of virtual reality! Here, we can explore any concept, simulate any scenario, or create anything you can imagine. What digital adventure shall we embark on?'),
+    ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0006', 'f08f390a-1237-4bfa-9e53-6980dbb5aa0d', 'Hello.'),
+    ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0007', 'c7e7899e-ac69-4024-a79c-252531920cd2', 'Greetings, brave adventurer! You have crossed the mystical threshold into our enchanted realm, where ancient magic still flows through the very air you breathe. The great library of spells awaits your discovery, legendary quests call out for heroes, and mythical creatures seek worthy companions. Your epic journey begins now - what path will you choose to walk in this realm of infinite wonder and boundless adventure?'),
+    ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0008', '2f263740-29f7-4622-b4ce-fd7ac29d04d5', 'Welcome to paradise! Feel the warm sand between your toes and breathe in the fresh ocean air. This tropical haven is the perfect place to unwind and let your worries drift away with the waves. What brings you to our peaceful shore today?'),
+    ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa0009', '5277db85-10c6-4f12-ab23-810f289ca6df', 'Welcome aboard Space Station Alpha! From our orbital vantage point, Earth appears as a beautiful blue marble suspended in the cosmic void. Our advanced systems are at your disposal for any space-related inquiries or cosmic conversations. What aspects of space exploration interest you most?'),
+    ('aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaa000a', 'e1daa2c4-3c0b-4ac5-9937-c9540f80c85e', 'Welcome to Laboratory Complex Omega! You''ve gained access to our most advanced research facility. The equipment around us represents the cutting edge of scientific innovation. What experiments or research topics would you like to explore in our secure environment?');
+
+UPDATE scenes SET is_public = true WHERE title IN ('Cozy Coffee Shop', 'Beach Resort Paradise', 'Space Station Alpha');
+
+INSERT INTO character_scene (character_id, scene_id) VALUES
+    ('43341001-4ea1-4f03-b315-811d3264b6a3', 'e971d123-2f76-4022-87e6-79fc372cbbf3'), -- Helpful Assistant + Office Environment
+    ('43341001-4ea1-4f03-b315-811d3264b6a3', '641e5f5d-73ea-4ef0-864c-2cb19f311b11'), -- Helpful Assistant + Cozy Coffee Shop
+    ('43341001-4ea1-4f03-b315-811d3264b6a3', '2f263740-29f7-4622-b4ce-fd7ac29d04d5'), -- Helpful Assistant + Beach Resort
+    
+    ('1a0fca84-996c-43b5-976a-0c676c61dde5', 'e971d123-2f76-4022-87e6-79fc372cbbf3'), -- Code Mentor + Office Environment
+    ('1a0fca84-996c-43b5-976a-0c676c61dde5', '7a587ee5-d55f-4d09-9ced-927ecc059ff0'), -- Code Mentor + Virtual Reality Space
+    ('1a0fca84-996c-43b5-976a-0c676c61dde5', 'e1daa2c4-3c0b-4ac5-9937-c9540f80c85e'), -- Code Mentor + Underground Lab
+    
+    ('08f6aff7-e5c6-4e96-b4f7-971e03cb81f8', '641e5f5d-73ea-4ef0-864c-2cb19f311b11'), -- Creative Writer + Cozy Coffee Shop
+    ('08f6aff7-e5c6-4e96-b4f7-971e03cb81f8', '7a587ee5-d55f-4d09-9ced-927ecc059ff0'), -- Creative Writer + Virtual Reality Space
+    ('08f6aff7-e5c6-4e96-b4f7-971e03cb81f8', 'c7e7899e-ac69-4024-a79c-252531920cd2'), -- Creative Writer + Epic Fantasy
+    
+    ('3a50caae-9f5d-4be3-882b-f17cdc10d0e3', '414e2a88-2376-46bd-bde7-06c7a514e0d4'), -- Math Tutor + Library Study Room
+    ('3a50caae-9f5d-4be3-882b-f17cdc10d0e3', 'e971d123-2f76-4022-87e6-79fc372cbbf3'), -- Math Tutor + Office Environment
+    
+    ('117737b7-e183-4aac-9a09-47a45c3d6f58', '414e2a88-2376-46bd-bde7-06c7a514e0d4'), -- Dr. Sophisticated + Library
+    ('117737b7-e183-4aac-9a09-47a45c3d6f58', '5277db85-10c6-4f12-ab23-810f289ca6df'), -- Dr. Sophisticated + Space Station
+    ('117737b7-e183-4aac-9a09-47a45c3d6f58', 'e1daa2c4-3c0b-4ac5-9937-c9540f80c85e'), -- Dr. Sophisticated + Underground Lab
+    
+    ('8ed61d7f-27db-4bef-a583-98a0d703ea66', 'f08f390a-1237-4bfa-9e53-6980dbb5aa0d'), -- Simple Bot + Minimalist Scene
+    
+    ('8abecb4a-8d05-4d24-8fab-31ea776640f2', '7a587ee5-d55f-4d09-9ced-927ecc059ff0'), -- Gaming Companion + Virtual Reality
+    ('8abecb4a-8d05-4d24-8fab-31ea776640f2', 'c7e7899e-ac69-4024-a79c-252531920cd2'), -- Gaming Companion + Epic Fantasy
+    ('8abecb4a-8d05-4d24-8fab-31ea776640f2', '5277db85-10c6-4f12-ab23-810f289ca6df'), -- Gaming Companion + Space Station
+    
+    ('84d54c1c-6837-44bf-ad31-26c78729a42c', '2f263740-29f7-4622-b4ce-fd7ac29d04d5'), -- Meditation Guide + Beach Resort
+    ('84d54c1c-6837-44bf-ad31-26c78729a42c', 'f08f390a-1237-4bfa-9e53-6980dbb5aa0d'), -- Meditation Guide + Minimalist Scene
+    
+    ('9a6cf9ec-11d7-471b-8678-c8651b8f331f', '2f263740-29f7-4622-b4ce-fd7ac29d04d5'), -- Travel Advisor + Beach Resort
+    ('9a6cf9ec-11d7-471b-8678-c8651b8f331f', '5277db85-10c6-4f12-ab23-810f289ca6df'), -- Travel Advisor + Space Station
+    ('9a6cf9ec-11d7-471b-8678-c8651b8f331f', '641e5f5d-73ea-4ef0-864c-2cb19f311b11'); -- Travel Advisor + Coffee Shop
+
+INSERT INTO chats (id, name, user_id, scene_id, created_at) VALUES
+    ('82dc4309-0ab2-4a9d-86c9-a49f8931494a', 'E2E Test Chat', '5dbdc924-968a-4c50-94a8-44cdd165e460', '5c194d75-401f-4fa2-808c-7092153135b7', NOW()),
+    ('048a7fe5-f4c2-40ef-9745-7d85d7c4c5fb', 'Project Help Chat', '5dbdc924-968a-4c50-94a8-44cdd165e460', 'e971d123-2f76-4022-87e6-79fc372cbbf3', NOW() - INTERVAL '2 days'),
+    ('90d27426-7b7a-4a4d-ba17-6f98b7c29c5e', 'Python Recursion Chat', 'f5ac5447-d562-4d7b-91fb-dc4d5bcc4395', '641e5f5d-73ea-4ef0-864c-2cb19f311b11', NOW() - INTERVAL '1 day'),
+    ('d99678f7-bb8c-41f4-9726-4722b44a5649', 'Space Story Writing', '4954ef15-b75b-4f92-b32c-ded5e80ce802', '414e2a88-2376-46bd-bde7-06c7a514e0d4', NOW() - INTERVAL '12 hours'),
+    ('ad8b09b7-1723-4459-ba61-5bf3a2699c11', 'Calculus Help', '4e50271e-2b64-46e4-b312-580782ea6549', '414e2a88-2376-46bd-bde7-06c7a514e0d4', NOW() - INTERVAL '6 hours'),
+    ('4bf7237c-ad71-4bb7-a9d9-27ae911bc1b8', 'Fantasy ML Discussion', 'e5fd1874-a299-4c22-b6b5-af4e00b796a7', 'c7e7899e-ac69-4024-a79c-252531920cd2', NOW() - INTERVAL '3 hours'),
+    ('14555316-cbfc-4254-85b5-e737863edc18', 'Simple Chat', 'c23dc540-a0ba-4d83-ac7b-d0f8eab9d463', 'f08f390a-1237-4bfa-9e53-6980dbb5aa0d', NOW() - INTERVAL '1 hour'),
+    ('7eec932a-1730-48a3-b547-d4c67161bf18', 'RPG Strategy Chat', 'f3ba11a5-4026-4c16-9aed-061f0d490ade', '7a587ee5-d55f-4d09-9ced-927ecc059ff0', NOW() - INTERVAL '30 minutes'),
+    ('0469588e-75f8-487f-8ce1-4434be8513c0', 'Stress Relief Session', '7edb0c2c-8dcd-402a-a979-cc7853d9b627', '2f263740-29f7-4622-b4ce-fd7ac29d04d5', NOW() - INTERVAL '15 minutes'),
+    ('0d19dc52-a72a-4ae6-840f-04b55858a231', 'Space Travel Planning', '53c41979-a116-4bb7-8281-57fadfd89a13', '5277db85-10c6-4f12-ab23-810f289ca6df', NOW() - INTERVAL '5 minutes'),
+    ('8a32d249-137b-4f8c-95c8-1665f7b0b9fb', 'Mars Mission Chat', '5dbdc924-968a-4c50-94a8-44cdd165e460', '5277db85-10c6-4f12-ab23-810f289ca6df', NOW() - INTERVAL '7 days'),
+    ('3b0ea7ee-d883-49d9-aabd-5cf497c6db79', 'Quantum Computing Analysis', 'f5ac5447-d562-4d7b-91fb-dc4d5bcc4395', 'e1daa2c4-3c0b-4ac5-9937-c9540f80c85e', NOW() - INTERVAL '10 days');
+
+UPDATE chats SET user_character_id = '43341001-4ea1-4f03-b315-811d3264b6a3'  -- Helpful Assistant, owned by admin_test
+WHERE id = '048a7fe5-f4c2-40ef-9745-7d85d7c4c5fb';  -- Project Help Chat
+
+UPDATE chats SET user_character_id = '43341001-4ea1-4f03-b315-811d3264b6a3'
+WHERE id = '82dc4309-0ab2-4a9d-86c9-a49f8931494a';  -- E2E Test Chat
+
+-- Mark every seeded chat as already past the "choose an initial message" step, so the
+-- send-message gate (chat.initial_message_id IS NOT NULL) holds for existing seed data.
+-- Each scene offers exactly one initial message above, so this pairs every chat with its
+-- scene's greeting in one statement.
+UPDATE chats c
+SET initial_message_id = im.id
+FROM scene_initial_messages im
+WHERE im.scene_id = c.scene_id;
+
+INSERT INTO messages (id, chat_id, role, content, cost_crystals, created_at) VALUES
+    -- Chat 1 messages
+    ('f7023ee5-06e3-476a-bb12-1e43122578ad', '048a7fe5-f4c2-40ef-9745-7d85d7c4c5fb', 'user', 'Hello! Can you help me with a project?', 0, NOW() - INTERVAL '2 days'),
+    ('53eff80a-2469-43f1-92de-95f48d1486cf', '048a7fe5-f4c2-40ef-9745-7d85d7c4c5fb', 'model', 'Hello! I would be happy to help you with your project. What kind of project are you working on?', 10, NOW() - INTERVAL '2 days' + INTERVAL '30 seconds'),
+    ('ae16fdd3-1d7d-45ee-bb7a-b9efe8147250', '048a7fe5-f4c2-40ef-9745-7d85d7c4c5fb', 'user', 'I need to create a web application for managing tasks.', 0, NOW() - INTERVAL '2 days' + INTERVAL '2 minutes'),
+    
+    -- Chat 2 messages
+    ('3bb87e98-9d32-4a51-9176-6c32345ad770', '90d27426-7b7a-4a4d-ba17-6f98b7c29c5e', 'user', 'Can you explain how recursion works in Python?', 0, NOW() - INTERVAL '1 day'),
+    ('3d820ed4-bec8-425f-960c-cfcc2973eeae', '90d27426-7b7a-4a4d-ba17-6f98b7c29c5e', 'model', 'Recursion is a programming technique where a function calls itself. Let me explain with an example...', 15, NOW() - INTERVAL '1 day' + INTERVAL '45 seconds'),
+    
+    -- Chat 3 messages
+    ('3f733ab8-4728-496f-b50e-61accf472991', 'd99678f7-bb8c-41f4-9726-4722b44a5649', 'user', 'Help me write a short story about space exploration.', 0, NOW() - INTERVAL '12 hours'),
+    ('933339b6-f813-4719-a1f1-45d680359896', 'd99678f7-bb8c-41f4-9726-4722b44a5649', 'model', 'I would love to help you create an engaging space exploration story! Let us start with the setting...', 20, NOW() - INTERVAL '12 hours' + INTERVAL '1 minute'),
+    
+    -- Chat 4 messages
+    ('527dd306-b878-4fae-806e-5158110f90d7', 'ad8b09b7-1723-4459-ba61-5bf3a2699c11', 'user', 'I need help with calculus derivatives.', 0, NOW() - INTERVAL '6 hours'),
+    ('7f0135b7-270b-4a48-be1d-56a54390737e', 'ad8b09b7-1723-4459-ba61-5bf3a2699c11', 'model', 'I would be happy to help you with calculus derivatives! What specific topic would you like to focus on?', 12, NOW() - INTERVAL '6 hours' + INTERVAL '20 seconds'),
+    
+    -- Chat 5 messages (Dr. Sophisticated)
+    ('8f697477-7ee1-4d42-8081-4e2bf956cae1', '4bf7237c-ad71-4bb7-a9d9-27ae911bc1b8', 'model', 'Welcome to the Epic Fantasy Adventure Scene. Your conversation will be enhanced by magical elements and rich storytelling.', 0, NOW() - INTERVAL '3 hours'),
+    ('f6b44e8b-4201-403f-b71d-e08623e2c2da', '4bf7237c-ad71-4bb7-a9d9-27ae911bc1b8', 'user', 'Tell me about advanced machine learning techniques.', 0, NOW() - INTERVAL '3 hours' + INTERVAL '1 minute'),
+    ('763b3bed-ae73-4b90-8781-d152f729fa29', '4bf7237c-ad71-4bb7-a9d9-27ae911bc1b8', 'model', 'Greetings! I shall illuminate the magnificent realm of advanced machine learning for you. In this magical domain of artificial intelligence, we encounter sophisticated techniques such as deep neural networks, transformer architectures, and reinforcement learning algorithms. These powerful methodologies represent the cutting edge of computational intelligence, capable of solving complex problems that were once thought impossible. Allow me to elaborate on each of these fascinating approaches...', 50, NOW() - INTERVAL '3 hours' + INTERVAL '2 minutes'),
+    
+    -- Chat 6 messages (Simple Bot)
+    ('b383cef2-e5e0-491c-8aa4-97521fbcd44f', '14555316-cbfc-4254-85b5-e737863edc18', 'user', 'Hi', 0, NOW() - INTERVAL '1 hour'),
+    ('cba20f48-2544-4bbf-a401-b7f841d95bd7', '14555316-cbfc-4254-85b5-e737863edc18', 'model', 'Hi.', 1, NOW() - INTERVAL '1 hour' + INTERVAL '5 seconds'),
+    
+    -- Chat 7 messages (Gaming Companion)
+    ('74f8172e-95e9-47ce-bdde-366fedadf23f', '7eec932a-1730-48a3-b547-d4c67161bf18', 'user', 'What are the best strategies for playing RPGs?', 0, NOW() - INTERVAL '30 minutes'),
+    ('62c93a1d-9c40-4a23-b607-f159cb3dcb8d', '7eec932a-1730-48a3-b547-d4c67161bf18', 'model', 'Great question! RPG strategies depend on the game type, but here are some universal tips...', 25, NOW() - INTERVAL '30 minutes' + INTERVAL '30 seconds'),
+    
+    -- Chat 8 messages (Meditation Guide)
+    ('01e52043-b4c7-4011-b4fc-b82dc2ee4b09', '0469588e-75f8-487f-8ce1-4434be8513c0', 'user', 'I am feeling stressed. Can you help me relax?', 0, NOW() - INTERVAL '15 minutes'),
+    ('96891009-0015-4849-8b46-2a1f4a3bcc8b', '0469588e-75f8-487f-8ce1-4434be8513c0', 'model', 'Of course. Let us begin with some deep breathing exercises. Find a comfortable position...', 18, NOW() - INTERVAL '15 minutes' + INTERVAL '45 seconds'),
+    
+    -- Chat 9 messages (Travel Advisor)
+    ('f3014238-e372-4b00-8cd6-973f67aec537', '0d19dc52-a72a-4ae6-840f-04b55858a231', 'user', 'What destinations would you recommend for a space travel enthusiast?', 0, NOW() - INTERVAL '5 minutes'),
+    ('002629c1-ccd5-42d2-bed8-1ebd61177077', '0d19dc52-a72a-4ae6-840f-04b55858a231', 'model', 'For space enthusiasts, I highly recommend visiting Kennedy Space Center in Florida, NASA Johnson Space Center in Houston, and the Griffith Observatory in Los Angeles for stunning astronomical views.', 35, NOW() - INTERVAL '5 minutes' + INTERVAL '1 minute'),
+    
+    -- Chat 10 messages (Long conversation)
+    ('0a2d8794-bca6-4b21-ab85-ebf0c740b3a3', '8a32d249-137b-4f8c-95c8-1665f7b0b9fb', 'model', 'This is a system message to initialize the space station environment for enhanced conversation context.', 0, NOW() - INTERVAL '7 days'),
+    ('b0e86dd8-4450-46ba-8130-d26cc48098f2', '8a32d249-137b-4f8c-95c8-1665f7b0b9fb', 'user', 'How do you plan a trip to Mars?', 0, NOW() - INTERVAL '7 days' + INTERVAL '2 minutes'),
+    ('da651db6-8d7c-4072-8aed-3e72ca1a4feb', '8a32d249-137b-4f8c-95c8-1665f7b0b9fb', 'model', 'Planning a trip to Mars involves numerous complex considerations including launch windows, spacecraft design, life support systems, radiation protection, and mission duration. Current estimates suggest a journey would take 6-9 months each way.', 100, NOW() - INTERVAL '7 days' + INTERVAL '3 minutes'),
+    ('13f24044-fa13-4312-b43b-20e7f3b31dee', '8a32d249-137b-4f8c-95c8-1665f7b0b9fb', 'user', 'What about the psychological challenges?', 0, NOW() - INTERVAL '7 days' + INTERVAL '5 minutes'),
+    ('eb8a1b62-dc81-435e-83aa-7c7f9a9e7c30', '8a32d249-137b-4f8c-95c8-1665f7b0b9fb', 'model', 'Excellent question! The psychological challenges are immense - isolation, confinement, communication delays with Earth, and the stress of knowing you cannot return quickly. Astronauts would need extensive mental health support.', 75, NOW() - INTERVAL '7 days' + INTERVAL '6 minutes'),
+    
+    -- Chat 11 messages (High cost conversation)
+    ('d92f7708-57e3-409a-bad1-1fe883afe1f4', '3b0ea7ee-d883-49d9-aabd-5cf497c6db79', 'user', 'Write me a detailed analysis of quantum computing.', 0, NOW() - INTERVAL '10 days'),
+    ('6aa69681-627e-440c-ab60-3667e2d36da9', '3b0ea7ee-d883-49d9-aabd-5cf497c6db79', 'model', 'Quantum computing represents a revolutionary paradigm in computational science, leveraging the principles of quantum mechanics to process information in fundamentally different ways than classical computers. This technology promises exponential speedups for certain types of problems...', 150, NOW() - INTERVAL '10 days' + INTERVAL '2 minutes');
+
+UPDATE messages SET updated_at = created_at;
+
+INSERT INTO media_assets (id, file_url, entity_type, entity_id) VALUES
+    ('8961b230-0504-4540-bb4c-540551cf2bdf', 'https://example.com/user_profile1.jpg', 'user', '5dbdc924-968a-4c50-94a8-44cdd165e460'),
+    ('4fdf4deb-1e61-4e22-8c29-77514fab0f83', 'https://example.com/user_profile2.jpg', 'user', 'f5ac5447-d562-4d7b-91fb-dc4d5bcc4395'),
+    ('26e7e583-63eb-4069-b6c3-f9c93e3b9708', 'https://user-profiles.example.com/premium-user-badge.ico', 'user', 'e5fd1874-a299-4c22-b6b5-af4e00b796a7'),
+    ('449b8ea2-f9d6-4c88-a70b-63d832f2436a', 'https://example.com/default-avatar.svg', 'user', 'c23dc540-a0ba-4d83-ac7b-d0f8eab9d463'),
+    ('bcfb901c-84c9-4236-8c9f-d7d6fee7805e', 'https://profile-images.example.net/new-user-welcome-banner.webp', 'user', 'f3ba11a5-4026-4c16-9aed-061f0d490ade'),
+    ('8212d164-1600-4aea-936e-16ce861eb58b', 'https://very-long-domain-name-for-testing-purposes.example.organization/extremely/long/path/structure/for/testing/url/length/limits/user-profile-image-with-very-descriptive-filename.jpg', 'user', '7edb0c2c-8dcd-402a-a979-cc7853d9b627'),
+    ('34e2a21b-d1cd-4cb9-9f30-f1cee4703868', 'https://inactive-user-assets.example.com/placeholder.png', 'user', '53c41979-a116-4bb7-8281-57fadfd89a13');
+
+INSERT INTO media_assets (id, object_key, bucket, content_type, entity_type, entity_id, is_public) VALUES
+    ('1c93f02d-e19a-4304-9eaa-bcf9edc6d24f', 'scene/e2e-test.png',         'scripulya-public', 'image/png', 'scene', '5c194d75-401f-4fa2-808c-7092153135b7', true), -- E2E Test Scene
+    ('726e284c-d65b-4817-bc73-d654db2854b0', 'scene/office.png',           'scripulya-public', 'image/png', 'scene', 'e971d123-2f76-4022-87e6-79fc372cbbf3', true), -- Office Environment
+    ('e29d17cf-0769-40f1-92b5-7a3d45683cfa', 'scene/coffee-shop.png',      'scripulya-public', 'image/png', 'scene', '641e5f5d-73ea-4ef0-864c-2cb19f311b11', true), -- Cozy Coffee Shop
+    ('a08ff485-b567-4c2f-bb00-7f98ef566401', 'scene/library.png',          'scripulya-public', 'image/png', 'scene', '414e2a88-2376-46bd-bde7-06c7a514e0d4', true), -- Library Study Room
+    ('cbcf5eb0-9a9c-4628-abf5-291e5fe4d086', 'scene/vr-space.png',         'scripulya-public', 'image/png', 'scene', '7a587ee5-d55f-4d09-9ced-927ecc059ff0', true), -- Virtual Reality Space
+    ('05591567-becb-447f-9070-b0d4db85f307', 'scene/minimalist.png',       'scripulya-public', 'image/png', 'scene', 'f08f390a-1237-4bfa-9e53-6980dbb5aa0d', true), -- Minimalist Scene
+    ('0c355303-4715-4d94-86a4-5edb450ff93a', 'scene/fantasy.png',          'scripulya-public', 'image/png', 'scene', 'c7e7899e-ac69-4024-a79c-252531920cd2', true), -- Epic Fantasy Adventure
+    ('ad1b4f32-b181-4a79-9627-09d2ba9ca79c', 'scene/beach.png',            'scripulya-public', 'image/png', 'scene', '2f263740-29f7-4622-b4ce-fd7ac29d04d5', true), -- Beach Resort Paradise
+    ('bca058ca-e53d-47a4-9145-501510142c29', 'scene/space-station.png',    'scripulya-public', 'image/png', 'scene', '5277db85-10c6-4f12-ab23-810f289ca6df', true), -- Space Station Alpha
+    ('febfb826-a578-43ab-858d-0c8060699e77', 'scene/underground-lab.png',  'scripulya-public', 'image/png', 'scene', 'e1daa2c4-3c0b-4ac5-9937-c9540f80c85e', true); -- Underground Laboratory
+
+INSERT INTO media_assets (id, object_key, bucket, content_type, entity_type, entity_id, is_public) VALUES
+    ('fc8a47d7-010a-48f1-8be4-a711760c547f', 'character/helpful-assistant.png', 'scripulya-public', 'image/png', 'character', '43341001-4ea1-4f03-b315-811d3264b6a3', true), -- Helpful Assistant
+    ('c9709cfb-f8bc-4744-99bf-f4273b01f0dc', 'character/code-mentor.png', 'scripulya-public', 'image/png', 'character', '1a0fca84-996c-43b5-976a-0c676c61dde5', true), -- Code Mentor
+    ('0cee0000-0000-4000-8000-000000000003', 'character/creative-writer.png', 'scripulya-public', 'image/png', 'character', '08f6aff7-e5c6-4e96-b4f7-971e03cb81f8', true), -- Creative Writer
+    ('0dee0000-0000-4000-8000-000000000004', 'character/math-tutor.png', 'scripulya-public', 'image/png', 'character', '3a50caae-9f5d-4be3-882b-f17cdc10d0e3', true), -- Math Tutor
+    ('886e8915-2492-4faa-8c57-9fa3ec5dd37b', 'character/dr-sophisticated.png', 'scripulya-public', 'image/png', 'character', '117737b7-e183-4aac-9a09-47a45c3d6f58', true), -- Dr. Sophisticated
+    ('fa0c662f-a84c-4862-ad38-643816925d1a', 'character/simple-bot.png', 'scripulya-public', 'image/png', 'character', '8ed61d7f-27db-4bef-a583-98a0d703ea66', true), -- Simple Bot
+    ('5dcbfb55-ceab-4ddc-889c-ab646576ebcd', 'character/gaming-companion.png', 'scripulya-public', 'image/png', 'character', '8abecb4a-8d05-4d24-8fab-31ea776640f2', true), -- Gaming Companion
+    ('a2c3f558-2939-4502-9fc5-2a4551599e87', 'character/meditation-guide.png', 'scripulya-public', 'image/png', 'character', '84d54c1c-6837-44bf-ad31-26c78729a42c', true), -- Meditation Guide
+    ('4a077616-4dc5-4b70-8145-fc7fce723813', 'character/travel-advisor.png', 'scripulya-public', 'image/png', 'character', '9a6cf9ec-11d7-471b-8678-c8651b8f331f', true), -- Travel Advisor
+    ('a11ee000-0000-4000-8000-000000000001', 'character/alizee.png', 'scripulya-public', 'image/png', 'character', '83855bba-0735-4f4c-93c2-00c253b5d43c', true), -- Alizee
+    ('01e00000-0000-4000-8000-000000000002', 'character/olegus.png', 'scripulya-public', 'image/png', 'character', '1590de4d-c0e1-4ca1-aa98-a15312aadf41', true); -- Olegus
+UPDATE media_assets SET is_public = true WHERE object_key IS NULL;
+
+SELECT 'Database initialization completed successfully!' as status;
+SELECT 
+    'users' as table_name, 
+    COUNT(*) as record_count 
+FROM users
+UNION ALL
+SELECT 'characters', COUNT(*) FROM characters
+UNION ALL  
+SELECT 'scenes', COUNT(*) FROM scenes
+UNION ALL
+SELECT 'scene_initial_messages', COUNT(*) FROM scene_initial_messages
+UNION ALL
+SELECT 'character_scene', COUNT(*) FROM character_scene
+UNION ALL
+SELECT 'character_likes', COUNT(*) FROM character_likes
+UNION ALL
+SELECT 'scene_likes', COUNT(*) FROM scene_likes
+UNION ALL
+SELECT 'character_bookmarks', COUNT(*) FROM character_bookmarks
+UNION ALL
+SELECT 'scene_bookmarks', COUNT(*) FROM scene_bookmarks
+UNION ALL
+SELECT 'chats', COUNT(*) FROM chats
+UNION ALL
+SELECT 'messages', COUNT(*) FROM messages
+UNION ALL
+SELECT 'media_assets', COUNT(*) FROM media_assets;
+-- ── Migration ledger ─────────────────────────────────────────────────────────
+-- Fresh databases already contain everything scripts/migrations/ has shipped
+-- so far (the schema above IS the current state). Record that baseline so
+-- scripts/apply_migrations.sh does not try to re-apply old files. When you add
+-- a new migration, also change its schema DDL above and append it here.
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    filename   TEXT PRIMARY KEY,
+    applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+INSERT INTO schema_migrations (filename) VALUES
+    ('2026-08-media-ordering.sql');
