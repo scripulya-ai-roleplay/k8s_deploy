@@ -179,6 +179,26 @@ You can run the same steps by hand on the VPS: `make prod-up`, `make prod-logs`,
 
 ---
 
+## Migrations
+
+Existing databases are never re-created to ship a schema change (that wipes
+data). The backend repo owns `scripts/migrations/` (one idempotent `.sql` per
+change) plus `scripts/apply_migrations.sh`; this repo just provides the button:
+
+**Actions → "MIGRATE" → Run workflow**. The workflow checks the backend repo
+out over SSH, rsyncs `migrations/` + the applier to the VPS, then applies
+pending files inside the `scripulya-postgres-1` container (exact name match +
+`pg_isready` before any DDL). Applied files are recorded in the
+`schema_migrations` ledger table, so re-pressing with nothing pending is a
+no-op. Tick **`dry_run`** to only list what would be applied.
+
+The job runs in the `production` GitHub **environment** — create it under
+*Settings → Environments* with required reviewers so applying DDL to prod
+always needs a human approval. It reuses this repo's existing secrets
+(`VPS_*`, `WG_*`, `SSH_PRIVATE_KEY`); no new secrets are required.
+
+---
+
 ## Rollback
 
 Re-run the workflow with an earlier **`image_tag`** (e.g. the last known-good
@@ -234,9 +254,8 @@ the containers whose image changed.
 - **scripulya-ai never becomes healthy** → the run prints the last 100 log lines.
   Common cause: `MINIO_PUBLIC_ENDPOINT` wrong, or DB not initialized on a fresh
   volume (the workflow ships `init.sql`; it only runs on a pristine data volume).
-- **Schema changes** → all schema lives in `scripts/init.sql` — there are **no
-  migration scripts** (dev/prod always initialize from a fresh `init.sql`). To
-  apply a change: edit `init.sql`, then re-seed (`docker compose down -v && up`,
-  which drops DB data) or run
-  `docker compose exec postgres psql -U user -d dbname -f /docker-entrypoint-initdb.d/init.sql`
-  against the existing volume.
+- **Schema changes** → the source of truth is the backend repo's
+  `scripts/init.sql` (vendored here as `./init.sql` for first-boot init; the
+  deploy workflow refreshes it from the backend on every run). Existing
+  databases are upgraded with **migrations**, not re-seeds — see
+  [Migrations](#migrations) below.
